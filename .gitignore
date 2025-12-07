@@ -10,7 +10,10 @@ dist/
 downloads/
 eggs/
 .eggs/
+# Ignore build/library outputs, but allow frontend src lib directory
 lib/
+!frontend/src/lib/
+!frontend/src/lib/**
 lib64/
 parts/
 sdist/
