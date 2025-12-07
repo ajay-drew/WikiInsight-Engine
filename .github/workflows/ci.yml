@@ -65,9 +65,19 @@ jobs:
       working-directory: frontend
       run: npm install
     
+    - name: Debug - List test files
+      working-directory: frontend
+      run: |
+        echo "Current directory: $(pwd)"
+        echo "Looking for test files..."
+        find . -name "*.test.*" -o -name "*.spec.*" || echo "No test files found with find"
+        ls -la src/lib/ || echo "src/lib/ not found"
+        echo "Checking if api.test.ts exists:"
+        test -f src/lib/api.test.ts && echo "✓ api.test.ts exists" || echo "✗ api.test.ts NOT found"
+    
     - name: Run frontend tests
       working-directory: frontend
-      run: npm test -- --run
+      run: npm test -- --run --reporter=verbose
 
   build:
     runs-on: ubuntu-latest
