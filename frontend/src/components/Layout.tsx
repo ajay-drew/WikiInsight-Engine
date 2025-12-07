@@ -1,8 +1,8 @@
 import React from "react";
 
 type LayoutProps = {
-  activePage: "lookup" | "clusters";
-  onChangePage: (page: "lookup" | "clusters") => void;
+  activePage: "lookup" | "clusters" | "search";
+  onChangePage: (page: "lookup" | "clusters" | "search") => void;
   children: React.ReactNode;
 };
 
@@ -19,8 +19,18 @@ export function Layout({ activePage, onChangePage, children }: LayoutProps) {
           </div>
           <nav className="flex gap-2">
             <button
+              onClick={() => onChangePage("search")}
+              className={`px-3 py-1.5 rounded text-sm transition-colors ${
+                activePage === "search"
+                  ? "bg-sky-500 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
+            >
+              Search
+            </button>
+            <button
               onClick={() => onChangePage("lookup")}
-              className={`px-3 py-1.5 rounded text-sm ${
+              className={`px-3 py-1.5 rounded text-sm transition-colors ${
                 activePage === "lookup"
                   ? "bg-sky-500 text-white"
                   : "bg-slate-800 text-slate-200 hover:bg-slate-700"
@@ -30,13 +40,13 @@ export function Layout({ activePage, onChangePage, children }: LayoutProps) {
             </button>
             <button
               onClick={() => onChangePage("clusters")}
-              className={`px-3 py-1.5 rounded text-sm ${
+              className={`px-3 py-1.5 rounded text-sm transition-colors ${
                 activePage === "clusters"
                   ? "bg-sky-500 text-white"
                   : "bg-slate-800 text-slate-200 hover:bg-slate-700"
               }`}
             >
-              Clusters Overview
+              Clusters
             </button>
           </nav>
         </div>

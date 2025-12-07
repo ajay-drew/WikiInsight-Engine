@@ -3,18 +3,24 @@ Tests for clustering utilities.
 """
 
 import numpy as np
+import pytest
 
 from src.modeling.cluster_topics import compute_cluster_summaries, make_clusterer
 
 
-def test_make_clusterer_and_summaries():
-    """Smoke test for clustering and summary generation."""
+@pytest.mark.parametrize("method", ["kmeans", "agglomerative"])
+def test_make_clusterer_and_summaries(method: str) -> None:
+    """Smoke test for clustering and summary generation for multiple methods."""
     rng = np.random.default_rng(0)
     embeddings = rng.normal(size=(20, 4))
-    cfg = {"method": "kmeans", "n_clusters": 3, "random_state": 0}
+    cfg = {"method": method, "n_clusters": 3, "random_state": 0}
 
     model, labels = make_clusterer(embeddings, cfg)
     assert labels.shape[0] == embeddings.shape[0]
+
+    # Both KMeans and our Agglomerative wrapper expose cluster_centers_
+    assert hasattr(model, "cluster_centers_")
+    assert model.cluster_centers_.shape[0] == cfg["n_clusters"]
 
     titles = [f"Article {i}" for i in range(len(embeddings))]
     texts = [f"sample text for article {i}" for i in range(len(embeddings))]
@@ -31,4 +37,15 @@ def test_make_clusterer_and_summaries():
     assert not summaries.empty
     assert {"cluster_id", "size", "keywords", "top_articles"}.issubset(summaries.columns)
 
+    # Basic checks on c-TF-IDF based keywords: non-empty, short list, no trivial stopwords.
+    for _, row in summaries.iterrows():
+        keywords = row["keywords"]
+        assert isinstance(keywords, list)
+        # We cap at 20 keywords per cluster in compute_cluster_summaries
+        assert len(keywords) <= 20
+        for kw in keywords:
+            assert isinstance(kw, str)
+            assert kw == kw.lower()
+            # Very weak stopword check – mainly to ensure the tokenizer + filtering runs.
+            assert kw not in {"the", "and", "is", "of", "to"}
 

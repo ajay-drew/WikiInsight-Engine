@@ -11,7 +11,11 @@ data:
 # Models / Clustering
 models:
   clustering:
-    method: "kmeans"  # or "minibatch_kmeans", "hdbscan", etc.
+    # Clustering method:
+    # - "agglomerative": hierarchical clustering (recommended for topic drill-down)
+    # - "kmeans": flat clustering
+    # - "minibatch_kmeans": scalable KMeans variant
+    method: "agglomerative"
     n_clusters: 100
     random_state: 42
   

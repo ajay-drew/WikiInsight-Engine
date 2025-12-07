@@ -44,7 +44,9 @@ export function ClustersOverviewPage() {
       <section>
         <h1 className="text-2xl font-semibold mb-2">Clusters Overview</h1>
         <p className="text-sm text-slate-400">
-          Inspect topic clusters, their sizes, and representative keywords/articles.
+          Inspect topic clusters, their sizes, and representative articles. For each cluster we
+          also show “topic words” – everyday words that appear often in this cluster and much less
+          in others, giving a quick feel for what the cluster is about.
         </p>
       </section>
 
@@ -71,7 +73,7 @@ export function ClustersOverviewPage() {
                 <tr>
                   <th className="px-3 py-2 text-left font-medium text-slate-400">ID</th>
                   <th className="px-3 py-2 text-left font-medium text-slate-400">Size</th>
-                  <th className="px-3 py-2 text-left font-medium text-slate-400">Keywords</th>
+                  <th className="px-3 py-2 text-left font-medium text-slate-400">Topic words</th>
                   <th className="px-3 py-2 text-left font-medium text-slate-400"></th>
                 </tr>
               </thead>
@@ -118,7 +120,9 @@ export function ClustersOverviewPage() {
                 {selectedCluster.size.toLocaleString()}
               </p>
               <div>
-                <p className="text-slate-400 mb-1">Keywords:</p>
+                <p className="text-slate-400 mb-1">
+                  Topic words (high-frequency and distinctive for this cluster):
+                </p>
                 <p className="text-slate-200">
                   {selectedCluster.keywords.slice(0, 20).join(", ")}
                 </p>

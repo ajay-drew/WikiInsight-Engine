@@ -5,9 +5,9 @@ stages:
     deps:
     - path: src/ingestion
       hash: md5
-      md5: 9e75b79730f7a2a242a822442aa04492.dir
-      size: 30852
-      nfiles: 11
+      md5: ed432621f1d6307134d4d47cfc07310d.dir
+      size: 15263
+      nfiles: 5
     params:
       params.yaml:
         data:
@@ -18,20 +18,20 @@ stages:
     outs:
     - path: data/raw/articles.json
       hash: md5
-      md5: 13577cbd7c6d8f45d548671a47ff8d6e
-      size: 6133026
+      md5: 692bc49488f1d292d4398755ef8b299e
+      size: 6202467
   preprocess:
     cmd: python -m src.preprocessing.process_data
     deps:
     - path: data/raw/articles.json
       hash: md5
-      md5: 13577cbd7c6d8f45d548671a47ff8d6e
-      size: 6133026
+      md5: 692bc49488f1d292d4398755ef8b299e
+      size: 6202467
     - path: src/preprocessing
       hash: md5
-      md5: 74bb3cafc26f571d23886e40ad56d6ae.dir
-      size: 24085
-      nfiles: 10
+      md5: ab6a6e654a51a7f62a83928fbdbdc0dc.dir
+      size: 11880
+      nfiles: 5
     params:
       params.yaml:
         preprocessing:
@@ -43,28 +43,28 @@ stages:
     outs:
     - path: data/features/embeddings.parquet
       hash: md5
-      md5: f20c56d97e84999356d4784240dec225
-      size: 316721
+      md5: 58a69f81a3e15b963b3006b3131cc5e4
+      size: 316620
     - path: data/processed/cleaned_articles.parquet
       hash: md5
-      md5: f4a93c9ec8a68cfd535af3fa5b94178c
-      size: 4808491
+      md5: b30ba99830fa864268cfff1c4c776966
+      size: 4869846
   cluster_topics:
     cmd: python -m src.modeling.cluster_topics
     deps:
     - path: data/features/embeddings.parquet
       hash: md5
-      md5: f20c56d97e84999356d4784240dec225
-      size: 316721
+      md5: 58a69f81a3e15b963b3006b3131cc5e4
+      size: 316620
     - path: src/modeling
       hash: md5
-      md5: 0d12ac76ad6751e67bc983c1fef02db7.dir
-      size: 28386
-      nfiles: 6
+      md5: b5cce2fc880ab8612a1df4e90d2a060b.dir
+      size: 24462
+      nfiles: 3
     params:
       params.yaml:
         models.clustering:
-          method: kmeans
+          method: agglomerative
           n_clusters: 100
           random_state: 42
         models.neighbors:
@@ -73,21 +73,21 @@ stages:
     outs:
     - path: models/clustering/cluster_assignments.parquet
       hash: md5
-      md5: a80d684c10e89a61882009b5f2f1a433
-      size: 3971
+      md5: 5bd9df9404d5f206c102208db137931e
+      size: 3962
     - path: models/clustering/clusters_summary.parquet
       hash: md5
-      md5: 8bac7b68eb14dc649881acda567839aa
-      size: 7343
+      md5: ae748ba98ff4e6f49ed26b068eaa64ba
+      size: 21365
     - path: models/clustering/kmeans_model.pkl
       hash: md5
-      md5: 0369c03036e923d76f2c0a870d38ddae
-      size: 308343
+      md5: 4dc9929392843c0885a81dda22b69a58
+      size: 308436
     - path: models/clustering/metrics.json
       hash: md5
       md5: 8861292f337dcd6033a9a4186b279cc3
       size: 47
     - path: models/clustering/nn_index.pkl
       hash: md5
-      md5: e2bbb4b4d62e5b3916b97bc050707a88
+      md5: 3ad12c61b4d6964b566c843fdc83bbf9
       size: 307795

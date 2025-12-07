@@ -2,6 +2,7 @@
 FastAPI main application for the WikiInsight Engine.
 
 Exposes endpoints for:
+- Hybrid search (semantic + keyword search with RRF).
 - Health and metadata.
 - Topic cluster lookup for a given article title.
 - Cluster-level explanations/summaries.
@@ -21,17 +22,20 @@ from slowapi.errors import RateLimitExceeded
 
 from src.common.logging_utils import setup_logging
 from src.modeling.topic_index import TopicIndex
+from src.serving.search_engine import HybridSearchEngine
+from src.preprocessing.embeddings import EmbeddingGenerator
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 _topic_index: Optional[TopicIndex] = None
+_search_engine: Optional[HybridSearchEngine] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
-    global _topic_index
+    global _topic_index, _search_engine
     # Startup
     try:
         _topic_index = TopicIndex.load_default()
@@ -52,9 +56,59 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load topic index: %s", exc)
         _topic_index = None
+
+    # Load HybridSearchEngine
+    try:
+        import os
+        import pandas as pd
+        import numpy as np
+        import yaml
+
+        EMBEDDINGS_PATH = os.path.join("data", "features", "embeddings.parquet")
+        CLEANED_ARTICLES_PATH = os.path.join("data", "processed", "cleaned_articles.parquet")
+        CONFIG_PATH = "config.yaml"
+
+        if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
+            # Load articles
+            cleaned_df = pd.read_parquet(CLEANED_ARTICLES_PATH)
+            articles = [
+                {
+                    "title": row["title"],
+                    "text": row.get("cleaned_text", row.get("raw_text", "")),
+                }
+                for _, row in cleaned_df.iterrows()
+            ]
+
+            # Load embeddings
+            emb_df = pd.read_parquet(EMBEDDINGS_PATH)
+            embeddings = np.vstack(emb_df["embedding"].to_list())
+
+            # Load embedding model
+            config = yaml.safe_load(open(CONFIG_PATH, "r"))
+            model_name = config.get("preprocessing", {}).get("embeddings", {}).get("model", "all-MiniLM-L6-v2")
+            embedding_model = EmbeddingGenerator(model_name=model_name)
+
+            _search_engine = HybridSearchEngine(
+                articles=articles,
+                embeddings=embeddings,
+                model=embedding_model.model,
+            )
+            logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
+        else:
+            logger.warning(
+                "Search engine artifacts not found. Search endpoint will be unavailable.\n"
+                "To generate the required artifacts, run:\n"
+                "  dvc repro"
+            )
+            _search_engine = None
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to load HybridSearchEngine: %s", exc)
+        _search_engine = None
+
     yield
     # Shutdown (if needed)
     _topic_index = None
+    _search_engine = None
 
 
 app = FastAPI(
@@ -104,6 +158,29 @@ class ClusterSummary(BaseModel):
     size: int
     keywords: List[str] = []
     top_articles: List[str] = []
+
+
+class SearchRequest(BaseModel):
+    """Request model for hybrid search."""
+
+    query: str
+    top_k: int = 10
+
+
+class SearchResultResponse(BaseModel):
+    """Response model for search results."""
+
+    title: str
+    score: float
+    rank: int
+
+
+class SearchResponse(BaseModel):
+    """Response model for search endpoint."""
+
+    query: str
+    results: List[SearchResultResponse]
+    total_results: int
 
 
 _topic_index: Optional[TopicIndex] = None
@@ -302,6 +379,58 @@ async def api_clusters_overview(request: Request):
 async def api_cluster_detail(request: Request, cluster_id: int):
     """API-prefixed alias for /clusters/{cluster_id} endpoint."""
     return await cluster_detail(request, cluster_id)
+
+
+@app.post("/api/search", response_model=SearchResponse)
+@limiter.limit("100/minute")
+async def api_search(request: Request, body: SearchRequest):
+    """
+    Hybrid search endpoint combining semantic (vector) and keyword (BM25) search.
+    
+    Args:
+        request: FastAPI request object (for rate limiting)
+        body: Search request with query and optional top_k
+        
+    Returns:
+        Search results with titles, scores, and ranks
+    """
+    global _search_engine
+    if _search_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Search engine is not available. Run the data pipeline first.",
+        )
+
+    try:
+        query = body.query.strip()
+        top_k = max(1, min(body.top_k, 50))  # Clamp between 1 and 50
+
+        if not query:
+            return SearchResponse(
+                query=body.query,
+                results=[],
+                total_results=0,
+            )
+
+        search_results = _search_engine.search(query, top_k=top_k)
+        
+        results = [
+            SearchResultResponse(
+                title=result.title,
+                score=result.score,
+                rank=result.rank,
+            )
+            for result in search_results
+        ]
+
+        return SearchResponse(
+            query=query,
+            results=results,
+            total_results=len(results),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error performing search for query '%s'", body.query)
+        raise HTTPException(status_code=500, detail="Internal server error during search")
 
 
 if __name__ == "__main__":

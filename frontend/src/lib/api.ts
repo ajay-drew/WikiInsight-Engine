@@ -50,4 +50,33 @@ export async function fetchClusterSummary(clusterId: number): Promise<ClusterSum
   return (await resp.json()) as ClusterSummary;
 }
 
+export type SearchResult = {
+  title: string;
+  score: number;
+  rank: number;
+};
+
+export type SearchResponse = {
+  query: string;
+  results: SearchResult[];
+  total_results: number;
+};
+
+export async function searchArticles(query: string, topK: number = 10): Promise<SearchResponse> {
+  const resp = await fetch(`${API_BASE}/search`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, top_k: topK })
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Search failed (${resp.status}): ${text || resp.statusText}`);
+  }
+
+  return (await resp.json()) as SearchResponse;
+}
+
 

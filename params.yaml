@@ -13,7 +13,7 @@ preprocessing:
 
 models:
   clustering:
-    method: "kmeans"
+    method: "agglomerative"
     n_clusters: 100
     random_state: 42
   neighbors:

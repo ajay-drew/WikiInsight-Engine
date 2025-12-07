@@ -4,25 +4,29 @@ An AI-driven system that uses **embeddings + clustering** to group Wikipedia art
 
 ## 🎯 What It Does
 
-Wikipedia is huge and fragmented. This project builds an unsupervised topic map of Wikipedia so you can explore how articles group together in practice, discover related articles, and identify topic clusters.
+Wikipedia is huge and fragmented. This project builds an unsupervised hierarchical topic map of Wikipedia using **AgglomerativeClustering** and **c-TF-IDF** keyword extraction. Explore how articles group together semantically, discover related articles, and identify distinctive topic clusters with meaningful keywords.
 
 ## ✅ Implemented Features
 
 - **Wikipedia Data Ingestion**: Fetch articles using `mwclient` with search and article retrieval
 - **Text Preprocessing**: Clean text, generate embeddings using `sentence-transformers`
-- **Topic Clustering**: KMeans/MiniBatchKMeans clustering with cluster summaries (keywords, top articles)
+- **Topic Clustering**: AgglomerativeClustering (hierarchical) with cluster summaries using c-TF-IDF for distinctive topic words
 - **Topic Index**: Fast lookup of article clusters, similar articles, and cluster summaries
-- **REST API**: FastAPI backend with endpoints for topic lookup (`/api/topics/lookup`) and cluster overview (`/api/clusters/overview`)
-- **React Frontend**: Modern UI with Vite + Tailwind CSS for exploring clusters and articles
+- **Hybrid Search Engine**: Combines semantic (vector) and keyword (BM25) search using Reciprocal Rank Fusion
+- **REST API**: FastAPI backend with endpoints for search (`/api/search`), topic lookup (`/api/topics/lookup`), and cluster overview (`/api/clusters/overview`)
+- **React Frontend**: Modern UI with Vite + Tailwind CSS featuring search, topic exploration, and cluster browsing
 - **MLOps Pipeline**: DVC for data versioning, MLflow for experiment tracking, Prefect for orchestration
 - **Test Suite**: Comprehensive pytest tests (unit, integration, API) + Vitest for frontend
 
 ## 🚧 Coming Soon
 
+- **Interactive 2D Visualization**: UMAP-based embedding projection for visual exploration of topic clusters
 - **Network Analysis**: Article similarity graphs and community detection visualization
 - **SHAP Explanations**: Feature importance for cluster assignments
 - **Enhanced Dashboard**: Interactive cluster exploration with network graphs
 - **CI/CD**: Automated testing and deployment workflows
+
+See [FUTURE_FEATURES.md](FUTURE_FEATURES.md) for detailed feature plans and implementation notes.
 
 ## 🛠️ Quick Start
 
@@ -38,6 +42,8 @@ run_tools.cmd
 
 # Start API + Frontend
 run_app.cmd
+# OR for production (no auto-reload, avoids Windows socket issues):
+run_app_production.cmd
 # OR manually:
 uvicorn src.api.main:app --reload  # Backend on :8000
 cd frontend && npm install && npm run dev  # Frontend on :5173
@@ -50,6 +56,7 @@ cd frontend && npm install && npm run dev  # Frontend on :5173
 │   ├── ingestion/      # Wikipedia API client
 │   ├── preprocessing/   # Text cleaning, embeddings
 │   ├── modeling/       # Clustering + topic index
+│   ├── serving/        # Hybrid search engine
 │   └── api/            # FastAPI backend
 ├── frontend/           # React + Vite + Tailwind
 ├── pipelines/prefect/  # Data pipeline orchestration
@@ -59,7 +66,9 @@ cd frontend && npm install && npm run dev  # Frontend on :5173
 
 ## 🔧 Tech Stack
 
-**ML**: `scikit-learn`, `sentence-transformers`, `spaCy`  
+**ML**: `scikit-learn` (AgglomerativeClustering), `sentence-transformers`, `spaCy`  
+**Keyword Extraction**: c-TF-IDF (class-based TF-IDF) with stopword filtering  
+**Search**: `rank-bm25` (BM25), `scikit-learn` (NearestNeighbors), Reciprocal Rank Fusion  
 **MLOps**: `DVC`, `MLflow`, `Prefect`  
 **Backend**: `FastAPI`, `pandas`, `numpy`  
 **Frontend**: `React`, `Vite`, `Tailwind CSS`  

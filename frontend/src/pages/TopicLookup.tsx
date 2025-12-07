@@ -31,7 +31,9 @@ export function TopicLookupPage() {
       <section>
         <h1 className="text-2xl font-semibold mb-2">Topic Lookup</h1>
         <p className="text-sm text-slate-400">
-          Enter a Wikipedia article title to see its topic cluster, keywords, and similar articles.
+          Enter a Wikipedia article title to see its topic cluster, distinctive topic words, and
+          similar articles. The topic words are terms that show up a lot in this cluster but much
+          less in other clusters.
         </p>
       </section>
 

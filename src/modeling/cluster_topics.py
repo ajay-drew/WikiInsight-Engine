@@ -2,24 +2,31 @@
 Clustering pipeline for WikiInsight Engine topic explorer.
 
 This module:
-- Loads embeddings (and optionally cleaned articles) produced by `src.preprocessing.process_data`.
+- Loads embeddings (and optionally cleaned articles) produced by
+  `src.preprocessing.process_data`.
 - Fits a clustering model (e.g., KMeans) according to `config.yaml`.
 - Builds a k-NN index for similar-article lookup.
-- Generates simple cluster summaries (keywords + representative articles).
+- Generates cluster summaries:
+    * representative articles (closest to cluster center)
+    * **topic words** using c-TF-IDF (class-based TF-IDF) with tokenization + stopword filtering
+      so that the keywords are both frequent in the cluster (normalized TF) and
+      distinctive compared to other clusters (high IDF based on class frequency).
 - Saves artifacts under `models/clustering/` and a metrics JSON for DVC/CI.
 """
 
 import json
 import logging
+import math
 import os
+import re
 from collections import Counter, defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Iterable, Set
 
 import joblib
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans, MiniBatchKMeans
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 
@@ -37,6 +44,145 @@ NN_INDEX_PATH = os.path.join(MODEL_DIR, "nn_index.pkl")
 CLUSTER_ASSIGNMENTS_PATH = os.path.join(MODEL_DIR, "cluster_assignments.parquet")
 CLUSTERS_SUMMARY_PATH = os.path.join(MODEL_DIR, "clusters_summary.parquet")
 METRICS_PATH = os.path.join(MODEL_DIR, "metrics.json")
+
+# ---------------------------------------------------------------------------
+# Tokenization / stopwords for keyword extraction
+# ---------------------------------------------------------------------------
+
+# A lightweight, hard-coded English stop word list. We keep this even when
+# spaCy is available so behaviour is stable and easy to reason about.
+STOP_WORDS: Set[str] = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "else",
+    "when",
+    "where",
+    "why",
+    "how",
+    "all",
+    "any",
+    "both",
+    "each",
+    "few",
+    "more",
+    "most",
+    "other",
+    "some",
+    "such",
+    "no",
+    "nor",
+    "not",
+    "only",
+    "own",
+    "same",
+    "so",
+    "than",
+    "too",
+    "very",
+    "can",
+    "will",
+    "just",
+    "don",
+    "should",
+    "now",
+    "is",
+    "am",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "in",
+    "on",
+    "at",
+    "by",
+    "for",
+    "from",
+    "of",
+    "to",
+    "as",
+    "this",
+    "that",
+    "these",
+    "those",
+    "it",
+    "its",
+    "he",
+    "she",
+    "they",
+    "you",
+    "we",
+    "i",
+}
+
+_WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z\-']+")
+
+try:  # spaCy is optional; we fall back to regex tokenization if unavailable
+    import spacy
+
+    try:
+        _NLP = spacy.load("en_core_web_sm")
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "spaCy model 'en_core_web_sm' not available; "
+            "falling back to simple regex tokenization for keywords.",
+        )
+        _NLP = None
+except Exception:  # noqa: BLE001
+    _NLP = None
+
+
+def _tokenize(text: str) -> List[str]:
+    """
+    Tokenize text into normalized word tokens with stopword and noise filtering.
+
+    The goal here is not perfect linguistic analysis but robust, fast extraction
+    of *topic words* that are:
+      - alphabetic (no pure punctuation/numbers)
+      - lower-cased
+      - at least 3 characters long
+      - not obvious stop words
+    """
+    text = text or ""
+
+    # Prefer spaCy if available: better tokenization and stopword detection.
+    if _NLP is not None:
+        doc = _NLP(text)
+        tokens: List[str] = []
+        for tok in doc:
+            if not tok.is_alpha:
+                continue
+            lemma = tok.lemma_.lower().strip()
+            if len(lemma) < 3:
+                continue
+            if lemma in STOP_WORDS or tok.is_stop:
+                continue
+            tokens.append(lemma)
+        return tokens
+
+    # Fallback: simple regex-based tokenization.
+    tokens = []
+    for match in _WORD_RE.finditer(text.lower()):
+        token = match.group(0)
+        if len(token) < 3:
+            continue
+        if token in STOP_WORDS:
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def load_config(path: str = CONFIG_PATH) -> Dict:
@@ -62,25 +208,85 @@ def load_cleaned_articles() -> pd.DataFrame:
     return pd.read_parquet(CLEANED_ARTICLES_PATH)
 
 
+class AgglomerativeWrapper:
+    """
+    Wrapper for AgglomerativeClustering that exposes cluster_centers_ attribute.
+    
+    This is needed because AgglomerativeClustering doesn't expose explicit cluster
+    centers, but downstream code expects a `.cluster_centers_` attribute.
+    
+    NOTE: Must be defined at module level (not inside a function) so it can be
+    pickled by joblib when saving the model.
+    """
+
+    def __init__(self, centers: np.ndarray, labels: np.ndarray, n_clusters: int):
+        """
+        Initialize wrapper with computed cluster centers.
+        
+        Args:
+            centers: Cluster centers array (n_clusters, n_features)
+            labels: Cluster labels for each sample
+            n_clusters: Number of clusters
+        """
+        self.cluster_centers_ = centers
+        self.labels_ = labels
+        self.n_clusters = n_clusters
+        self.method = "agglomerative"
+
+
 def make_clusterer(embeddings: np.ndarray, cfg: Dict):
     method = (cfg.get("method") or "kmeans").lower()
     n_clusters = int(cfg.get("n_clusters", 100))
     random_state = int(cfg.get("random_state", 42))
 
+    # NOTE:
+    #   - We keep KMeans/MiniBatchKMeans support for tests and backward
+    #     compatibility.
+    #   - For hierarchical/topic-exploration use-cases, the recommended
+    #     setting is `method: "agglomerative"` so we can build on top of a
+    #     hierarchical clustering structure.
     if method == "minibatch_kmeans":
         model = MiniBatchKMeans(
             n_clusters=n_clusters,
             random_state=random_state,
             n_init="auto",
         )
-    else:
-        model = KMeans(
-            n_clusters=n_clusters,
-            random_state=random_state,
-            n_init="auto",
-        )
+        logger.info("Fitting MiniBatchKMeans with n_clusters=%d", n_clusters)
+        labels = model.fit_predict(embeddings)
+        return model, labels
 
-    logger.info("Fitting %s with n_clusters=%d", method, n_clusters)
+    if method == "agglomerative":
+        logger.info("Fitting AgglomerativeClustering with n_clusters=%d", n_clusters)
+        agg = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
+        labels = agg.fit_predict(embeddings)
+
+        # AgglomerativeClustering does not expose explicit cluster centers,
+        # but downstream code (and tests) expect a `.cluster_centers_`
+        # attribute. We compute simple centroids per cluster label.
+        centers: List[np.ndarray] = []
+        for cluster_id in range(n_clusters):
+            mask = labels == cluster_id
+            if not np.any(mask):
+                # If a cluster ended up empty (can happen in edge cases),
+                # fall back to a zero vector with the correct dimensionality.
+                centers.append(np.zeros(embeddings.shape[1], dtype=embeddings.dtype))
+            else:
+                centers.append(embeddings[mask].mean(axis=0))
+        centers_arr = np.vstack(centers)
+
+        # Wrap in a lightweight object exposing `cluster_centers_` so the
+        # rest of the pipeline (and tests) can stay unchanged.
+        # NOTE: AgglomerativeWrapper is defined at module level so it can be pickled.
+        model = AgglomerativeWrapper(centers_arr, labels, n_clusters)
+        return model, labels
+
+    # Default: standard KMeans
+    model = KMeans(
+        n_clusters=n_clusters,
+        random_state=random_state,
+        n_init="auto",
+    )
+    logger.info("Fitting KMeans with n_clusters=%d", n_clusters)
     labels = model.fit_predict(embeddings)
     return model, labels
 
@@ -100,38 +306,101 @@ def compute_cluster_summaries(
     embeddings: np.ndarray,
     labels: np.ndarray,
     centers: np.ndarray,
-    top_k_keywords: int = 10,
+    top_k_keywords: int = 20,
     top_k_articles: int = 10,
 ) -> pd.DataFrame:
     """
-    Compute simple summaries for each cluster:
-      - size
-      - top keywords (by frequency in cleaned text)
-      - representative articles (closest to cluster center)
+    Compute cluster summaries using c-TF-IDF (class-based TF-IDF):
+      - size: number of articles in cluster
+      - top keywords: terms ranked by c-TF-IDF score (normalized TF × IDF across clusters)
+      - representative articles: articles closest to cluster centroid
+    
+    c-TF-IDF treats each cluster as a "class" and computes:
+      - TF(term, cluster) = count(term) / total_tokens_in_cluster (normalized)
+      - IDF(term) = log(N_clusters / CF(term)) where CF is class frequency
+      - c-TF-IDF(term, cluster) = TF(term, cluster) × IDF(term)
+    
+    This emphasizes terms that are both frequent within a cluster AND
+    distinctive compared to other clusters.
     """
     cluster_to_indices: Dict[int, List[int]] = defaultdict(list)
     for idx, lbl in enumerate(labels):
         cluster_to_indices[int(lbl)].append(idx)
 
+    # ------------------------------------------------------------------
+    # c-TF-IDF (class-based TF-IDF) computation:
+    # Treats each cluster as a "class" and computes:
+    #   - TF(term, cluster)  = normalized frequency: count(term) / total_tokens_in_cluster
+    #   - DF(term)           = number of clusters (classes) where term appears
+    #   - IDF(term)          = log(N_clusters / DF(term))
+    #   - c-TF-IDF(term, cluster) = TF(term, cluster) × IDF(term)
+    #
+    # This emphasizes terms that are frequent within a cluster AND
+    # distinctive compared to other clusters.
+    # ------------------------------------------------------------------
+    cluster_token_counters: Dict[int, Counter] = {}
+    cluster_token_sets: Dict[int, Set[str]] = {}
+    cluster_total_tokens: Dict[int, int] = {}
+
+    for cluster_id, indices in cluster_to_indices.items():
+        token_counter: Counter = Counter()
+        token_set: Set[str] = set()
+        total_tokens = 0
+        for i in indices:
+            text = cleaned_texts[i] or ""
+            tokens = list(_tokenize(text))
+            for tok in tokens:
+                token_counter[tok] += 1
+                token_set.add(tok)
+                total_tokens += 1
+        cluster_token_counters[cluster_id] = token_counter
+        cluster_token_sets[cluster_id] = token_set
+        cluster_total_tokens[cluster_id] = total_tokens
+
+    # Compute class frequency (CF) across clusters: how many clusters contain each term
+    cf_counter: Counter = Counter()
+    for token_set in cluster_token_sets.values():
+        cf_counter.update(token_set)
+
+    n_clusters = max(len(cluster_token_sets), 1)
+    idf: Dict[str, float] = {}
+    for term, cf in cf_counter.items():
+        # Standard c-TF-IDF IDF formula: log(N_classes / CF(term))
+        # Add small epsilon to avoid division by zero
+        if cf > 0:
+            idf[term] = math.log(n_clusters / cf)
+        else:
+            idf[term] = 0.0
+
+    # ------------------------------------------------------------------
+    # Second pass: build output rows using c-TF-IDF ranking for "keywords"
+    # and Euclidean distance to cluster center for representative articles.
+    # ------------------------------------------------------------------
     rows: List[Dict] = []
     for cluster_id, indices in cluster_to_indices.items():
+        # Representative/top articles by proximity to centroid
         cluster_embeddings = embeddings[indices]
         center = centers[cluster_id].reshape(1, -1)
         dists = pairwise_distances(cluster_embeddings, center, metric="euclidean").ravel()
         order = np.argsort(dists)
-
-        # Representative/top articles
         rep_indices = [indices[i] for i in order[:top_k_articles]]
         top_articles = [titles[i] for i in rep_indices]
 
-        # Keyword extraction from cleaned text (very simple)
-        tokens: List[str] = []
-        for i in indices:
-            text = cleaned_texts[i] or ""
-            tokens.extend(str(text).lower().split())
-
-        counter = Counter(tokens)
-        keywords = [w for w, _ in counter.most_common(top_k_keywords)]
+        # c-TF-IDF based topic words
+        token_counts = cluster_token_counters.get(cluster_id, Counter())
+        total_tokens_in_cluster = cluster_total_tokens.get(cluster_id, 1)
+        
+        if token_counts and total_tokens_in_cluster > 0:
+            # Normalize TF by cluster size: TF = count / total_tokens_in_cluster
+            c_tfidf_scores = {
+                term: (count / total_tokens_in_cluster) * idf.get(term, 0.0)
+                for term, count in token_counts.items()
+            }
+            # Sort by c-TF-IDF descending and keep the top_k_keywords terms
+            sorted_terms = sorted(c_tfidf_scores.items(), key=lambda kv: kv[1], reverse=True)
+            keywords = [term for term, _ in sorted_terms[:top_k_keywords]]
+        else:
+            keywords = []
 
         rows.append(
             {
