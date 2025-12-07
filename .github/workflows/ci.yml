@@ -7,22 +7,22 @@ on:
     branches: [ main, develop ]
 
 jobs:
-  test:
+  test-backend:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest pytest-cov flake8
+        pip install -e .
+        pip install pytest pytest-cov pytest-asyncio flake8
     
     - name: Download spaCy model
       run: |
@@ -35,30 +35,54 @@ jobs:
     
     - name: Test with pytest
       run: |
-        # Skip network-dependent tests in CI
         pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --tb=short \
           --ignore=tests/test_wikipedia_coronavirus.py \
-          --ignore=tests/test_ingestion.py::test_wikipedia_client_init
+          --ignore=tests/test_fetch_wikipedia_data_async.py \
+          --ignore=tests/test_wikipedia_client_async.py
       continue-on-error: false
       timeout-minutes: 10
     
     - name: Upload coverage
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         fail_ci_if_error: false
 
-  build:
+  test-frontend:
     runs-on: ubuntu-latest
-    needs: test
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+    
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+    
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: npm ci
+    
+    - name: Run frontend tests
+      working-directory: frontend
+      run: npm test -- --run
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    
+    steps:
+    - uses: actions/checkout@v4
     
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v2
+      uses: docker/setup-buildx-action@v3
     
     - name: Build Docker image
       run: |
         docker build -f docker/Dockerfile -t wikiinsight-engine:latest .
-
+    
+    - name: Test Docker image
+      run: |
+        docker run --rm wikiinsight-engine:latest python -c "import src; print('Build successful')"
