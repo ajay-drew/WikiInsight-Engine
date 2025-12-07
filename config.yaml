@@ -1,0 +1,62 @@
+# WikiInsight Engine Configuration
+
+# Data Sources
+data:
+  wikipedia:
+    site: "en.wikipedia.org"
+    api_rate_limit: 200  # requests per second
+    cache_ttl: 3600  # seconds
+  
+  eventstreams:
+    base_url: "https://stream.wikimedia.org/v2/stream"
+    streams:
+      - "recentchange"
+      - "page-links-change"
+
+# Models / Clustering
+models:
+  clustering:
+    method: "kmeans"  # or "minibatch_kmeans", "hdbscan", etc.
+    n_clusters: 100
+    random_state: 42
+  
+  neighbors:
+    n_neighbors: 10
+    algorithm: "auto"
+
+# Preprocessing
+preprocessing:
+  embeddings:
+    model: "all-MiniLM-L6-v2"
+    batch_size: 32
+  
+  graph:
+    similarity_threshold: 0.7
+
+# API
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  rate_limit: 100  # requests per minute
+
+# Dashboard
+dashboard:
+  port: 8501
+  theme: "light"
+
+# MLOps
+mlops:
+  dvc:
+    remote: "local"  # or "s3", "gcs"
+  
+  mlflow:
+    tracking_uri: "sqlite:///mlflow.db"
+    experiment_name: "wikiinsight"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/wikiinsight.log"
+

@@ -1,0 +1,39 @@
+# DVC Pipeline Configuration
+
+stages:
+  fetch_data:
+    cmd: python -m src.ingestion.fetch_wikipedia_data
+    deps:
+      - src/ingestion
+    outs:
+      - data/raw/articles.json
+    params:
+      - data
+
+  preprocess:
+    cmd: python -m src.preprocessing.process_data
+    deps:
+      - data/raw/articles.json
+      - src/preprocessing
+    outs:
+      - data/processed/cleaned_articles.parquet
+      - data/features/embeddings.parquet
+    params:
+      - preprocessing
+
+  cluster_topics:
+    cmd: python -m src.modeling.cluster_topics
+    deps:
+      - data/features/embeddings.parquet
+      - src/modeling
+    outs:
+      - models/clustering/kmeans_model.pkl
+      - models/clustering/nn_index.pkl
+      - models/clustering/cluster_assignments.parquet
+      - models/clustering/clusters_summary.parquet
+    metrics:
+      - models/clustering/metrics.json
+    params:
+      - models.clustering
+      - models.neighbors
+
