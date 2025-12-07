@@ -7,11 +7,6 @@ data:
     api_rate_limit: 200  # requests per second
     cache_ttl: 3600  # seconds
   
-  eventstreams:
-    base_url: "https://stream.wikimedia.org/v2/stream"
-    streams:
-      - "recentchange"
-      - "page-links-change"
 
 # Models / Clustering
 models:
@@ -40,10 +35,6 @@ api:
   workers: 4
   rate_limit: 100  # requests per minute
 
-# Dashboard
-dashboard:
-  port: 8501
-  theme: "light"
 
 # MLOps
 mlops:

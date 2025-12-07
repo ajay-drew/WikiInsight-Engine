@@ -1,30 +1,20 @@
 @echo off
-setlocal
-
-REM Run WikiInsight backend API (FastAPI) and React/Vite frontend.
-REM Assumes this script is located in the project root.
-
-REM Change to project root (directory of this script)
 cd /d "%~dp0"
 
-REM Activate virtual environment if it exists (support both venv and .venv)
-if exist "venv\Scripts\activate.bat" (
-    call "venv\Scripts\activate.bat"
-) else if exist ".venv\Scripts\activate.bat" (
-    call ".venv\Scripts\activate.bat"
-)
+REM Activate venv if exists
+if exist "venv\Scripts\activate.bat" call "venv\Scripts\activate.bat"
+if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
 
-REM Default values if env vars are not set
-if not defined API_HOST set API_HOST=0.0.0.0
-if not defined API_PORT set API_PORT=8000
-if not defined DASHBOARD_PORT set DASHBOARD_PORT=8501
+REM Set ports (use env vars if set)
+if "%API_PORT%"=="" set "API_PORT=8000"
+if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=5173"
 
-echo Starting WikiInsight API on %API_HOST%:%API_PORT% ...
-start "WikiInsight API" cmd /k "python -m uvicorn src.api.main:app --reload --host %API_HOST% --port %API_PORT%"
+REM Start backend
+start "API" cmd /k "cd /d %~dp0 && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
 
-echo Starting WikiInsight Frontend (Vite dev server) ...
-start "WikiInsight Frontend" cmd /k "cd frontend && npm run dev"
+REM Start frontend
+start "Frontend" cmd /k "cd /d %~dp0frontend && npm run dev -- --host --port %FRONTEND_PORT%"
 
-endlocal
-
-
+echo API: http://127.0.0.1:%API_PORT%
+echo Frontend: http://localhost:%FRONTEND_PORT%
+pause

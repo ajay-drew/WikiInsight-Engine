@@ -1,36 +1,21 @@
 """
-Script to fetch a corpus of Wikipedia articles and store them in `data/raw/articles.json`.
+Async script to fetch a corpus of Wikipedia articles using concurrent API calls.
 
-This is a lightweight ingestion entrypoint that:
-- Uses `WikipediaClient` to fetch articles for a set of seed queries.
-- Normalizes them into a minimal article schema.
-- Writes newline-delimited JSON (one article per line) for downstream preprocessing.
+This is the main ingestion entrypoint that uses AsyncWikipediaClient to fetch
+multiple articles concurrently, significantly speeding up data ingestion.
 """
 
+import asyncio
 import json
 import logging
 import os
-from typing import Dict, Iterable, List, Set
-
-from tqdm import tqdm
+from typing import Dict, Iterable, List
 
 from src.common.logging_utils import setup_logging
-from .wikipedia_client import WikipediaClient
+from .wikipedia_client_async import AsyncWikipediaClient
+from .constants import RAW_DATA_PATH, SEED_QUERIES
 
 logger = logging.getLogger(__name__)
-
-
-RAW_DATA_PATH = os.path.join("data", "raw", "articles.json")
-
-# Simple, hard-coded seeds for now; can be extended or made configurable later.
-SEED_QUERIES: List[str] = [
-    "Machine learning",
-    "Artificial intelligence",
-    "Data science",
-    "Physics",
-    "Biology",
-    "History",
-]
 
 
 def _normalize_article(raw: Dict) -> Dict:
@@ -72,55 +57,92 @@ def _normalize_article(raw: Dict) -> Dict:
     }
 
 
-def fetch_corpus(
-    max_articles: int = 100,  # Reduced default for faster testing
-    per_query_limit: int = 50,  # Reduced default for faster testing
+async def fetch_corpus_async(
+    max_articles: int = 100,
+    per_query_limit: int = 50,
+    batch_size: int = 10,
+    max_workers: int = 10,
 ) -> List[Dict]:
     """
-    Fetch a corpus of Wikipedia articles based on seed queries.
+    Fetch a corpus of Wikipedia articles concurrently (no sequential requests).
 
     Args:
         max_articles: Maximum number of unique articles to fetch.
         per_query_limit: Maximum search results per seed query.
+        batch_size: Number of articles to fetch concurrently in each batch.
+        max_workers: Maximum number of concurrent workers.
+
+    Returns:
+        List of normalized article dictionaries.
     """
     logger.info(
-        "Initializing corpus fetch (max_articles=%d, per_query_limit=%d)",
+        "Initializing async corpus fetch (max_articles=%d, per_query_limit=%d, batch_size=%d, max_workers=%d)",
         max_articles,
         per_query_limit,
+        batch_size,
+        max_workers,
     )
-    client = WikipediaClient()
-    seen_titles: Set[str] = set()
+    client = AsyncWikipediaClient(max_workers=max_workers)
+    seen_titles: set[str] = set()
     articles: List[Dict] = []
 
-    for query_idx, query in enumerate(SEED_QUERIES, 1):
-        logger.info("Processing query %d/%d: '%s'", query_idx, len(SEED_QUERIES), query)
-        try:
-            search_results = client.search_articles(query, limit=per_query_limit)
+    try:
+        # Process all queries concurrently
+        search_tasks = [
+            client.search_articles(query, limit=per_query_limit) for query in SEED_QUERIES
+        ]
+        all_search_results = await asyncio.gather(*search_tasks)
+
+        # Collect all unique titles
+        titles_to_fetch: List[str] = []
+        for query_idx, search_results in enumerate(all_search_results):
+            query = SEED_QUERIES[query_idx]
             logger.info("Found %d search results for '%s'", len(search_results), query)
             
-            for result in tqdm(search_results, desc=f"Fetching articles for '{query}'", leave=False):
+            for result in search_results:
                 title = result.get("title")
-                if not title or title in seen_titles:
-                    continue
+                if title and title not in seen_titles:
+                    seen_titles.add(title)
+                    titles_to_fetch.append(title)
+                    
+                    if len(titles_to_fetch) >= max_articles:
+                        break
+            
+            if len(titles_to_fetch) >= max_articles:
+                break
 
-                seen_titles.add(title)
-                article = client.get_article(title)
-                if not article:
-                    continue
+        if not titles_to_fetch:
+            logger.warning("No articles to fetch")
+            return []
 
-                normalized = _normalize_article(article)
-                if not normalized.get("title") or not normalized.get("text"):
-                    continue
+        # Limit to max_articles
+        titles_to_fetch = titles_to_fetch[:max_articles]
+        logger.info("Fetching %d articles concurrently...", len(titles_to_fetch))
 
-                articles.append(normalized)
-                if len(articles) % 10 == 0:
-                    logger.info("Fetched %d articles so far...", len(articles))
-                
-                if len(articles) >= max_articles:
-                    logger.info("Reached max_articles=%d", max_articles)
-                    return articles
-        except Exception:  # noqa: BLE001
-            logger.exception("Error while processing query '%s'", query)
+        # Fetch ALL articles concurrently (not in batches)
+        batch_articles = await client.get_articles_batch(
+            titles_to_fetch, fetch_links=False, fetch_categories=False
+        )
+
+        # Process and normalize articles
+        for article in batch_articles:
+            if not article:
+                continue
+
+            normalized = _normalize_article(article)
+            if not normalized.get("title") or not normalized.get("text"):
+                continue
+
+            articles.append(normalized)
+
+            if len(articles) % 10 == 0:
+                logger.info("Processed %d articles so far...", len(articles))
+
+    except Exception:  # noqa: BLE001
+        logger.exception("Error during async corpus fetch")
+    finally:
+        # Cleanup executor
+        client.executor.shutdown(wait=True)
 
     logger.info("Fetched %d articles in total", len(articles))
     return articles
@@ -135,15 +157,19 @@ def save_articles(articles: List[Dict], path: str = RAW_DATA_PATH) -> None:
     logger.info("Saved %d articles to %s", len(articles), path)
 
 
-def main() -> None:
+async def main_async() -> None:
+    """Async main function."""
     setup_logging()
-    logger.info("Starting Wikipedia ingestion")
-    articles = fetch_corpus()
+    logger.info("Starting async Wikipedia ingestion")
+    articles = await fetch_corpus_async()
     save_articles(articles, RAW_DATA_PATH)
     logger.info("Ingestion complete")
 
 
+def main() -> None:
+    """Main entry point that runs async function."""
+    asyncio.run(main_async())
+
+
 if __name__ == "__main__":
     main()
-
-

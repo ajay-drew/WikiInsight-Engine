@@ -1,0 +1,93 @@
+schema: '2.0'
+stages:
+  fetch_data:
+    cmd: python -m src.ingestion.fetch_wikipedia_data
+    deps:
+    - path: src/ingestion
+      hash: md5
+      md5: 9e75b79730f7a2a242a822442aa04492.dir
+      size: 30852
+      nfiles: 11
+    params:
+      params.yaml:
+        data:
+          wikipedia:
+            site: en.wikipedia.org
+            api_rate_limit: 200
+            cache_ttl: 3600
+    outs:
+    - path: data/raw/articles.json
+      hash: md5
+      md5: 13577cbd7c6d8f45d548671a47ff8d6e
+      size: 6133026
+  preprocess:
+    cmd: python -m src.preprocessing.process_data
+    deps:
+    - path: data/raw/articles.json
+      hash: md5
+      md5: 13577cbd7c6d8f45d548671a47ff8d6e
+      size: 6133026
+    - path: src/preprocessing
+      hash: md5
+      md5: 74bb3cafc26f571d23886e40ad56d6ae.dir
+      size: 24085
+      nfiles: 10
+    params:
+      params.yaml:
+        preprocessing:
+          embeddings:
+            model: all-MiniLM-L6-v2
+            batch_size: 32
+          graph:
+            similarity_threshold: 0.7
+    outs:
+    - path: data/features/embeddings.parquet
+      hash: md5
+      md5: f20c56d97e84999356d4784240dec225
+      size: 316721
+    - path: data/processed/cleaned_articles.parquet
+      hash: md5
+      md5: f4a93c9ec8a68cfd535af3fa5b94178c
+      size: 4808491
+  cluster_topics:
+    cmd: python -m src.modeling.cluster_topics
+    deps:
+    - path: data/features/embeddings.parquet
+      hash: md5
+      md5: f20c56d97e84999356d4784240dec225
+      size: 316721
+    - path: src/modeling
+      hash: md5
+      md5: 0d12ac76ad6751e67bc983c1fef02db7.dir
+      size: 28386
+      nfiles: 6
+    params:
+      params.yaml:
+        models.clustering:
+          method: kmeans
+          n_clusters: 100
+          random_state: 42
+        models.neighbors:
+          n_neighbors: 10
+          algorithm: auto
+    outs:
+    - path: models/clustering/cluster_assignments.parquet
+      hash: md5
+      md5: a80d684c10e89a61882009b5f2f1a433
+      size: 3971
+    - path: models/clustering/clusters_summary.parquet
+      hash: md5
+      md5: 8bac7b68eb14dc649881acda567839aa
+      size: 7343
+    - path: models/clustering/kmeans_model.pkl
+      hash: md5
+      md5: 0369c03036e923d76f2c0a870d38ddae
+      size: 308343
+    - path: models/clustering/metrics.json
+      hash: md5
+      md5: 8861292f337dcd6033a9a4186b279cc3
+      size: 47
+    - path: models/clustering/nn_index.pkl
+      hash: md5
+      md5: e2bbb4b4d62e5b3916b97bc050707a88
+      size: 307795

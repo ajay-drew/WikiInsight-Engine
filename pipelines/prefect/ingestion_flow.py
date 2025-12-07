@@ -7,7 +7,7 @@ and monitored via Prefect.
 
 from prefect import flow, task
 
-from src.ingestion.fetch_wikipedia_data import main as fetch_main
+from src.ingestion.fetch_wikipedia_data import main as fetch_main  # Now uses async internally
 
 
 @task

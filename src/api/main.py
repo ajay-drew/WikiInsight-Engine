@@ -15,6 +15,9 @@ from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from src.common.logging_utils import setup_logging
 from src.modeling.topic_index import TopicIndex
@@ -60,6 +63,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # CORS middleware
 app.add_middleware(
@@ -150,19 +158,21 @@ def _ensure_index_available() -> TopicIndex:
 
 
 @app.post("/topics/lookup", response_model=TopicClusterResponse)
-async def lookup_topic_cluster(request: TopicQueryRequest):
+@limiter.limit("100/minute")
+async def lookup_topic_cluster(request: Request, body: TopicQueryRequest):
     """
     Look up the topic cluster for an article and return similar articles.
     
     Args:
-        request: Topic/cluster lookup request
+        request: FastAPI request object (for rate limiting)
+        body: Topic/cluster lookup request
         
     Returns:
         Topic cluster information with similar articles and optional explanation
     """
     try:
         index = _ensure_index_available()
-        result = index.lookup(request.article_title)
+        result = index.lookup(body.article_title)
         return TopicClusterResponse(
             article_title=result.article_title,
             cluster_id=result.cluster_id,
@@ -175,15 +185,16 @@ async def lookup_topic_cluster(request: TopicQueryRequest):
     except KeyError:
         raise HTTPException(
             status_code=404,
-            detail=f"Article '{request.article_title}' not found in topic index.",
+            detail=f"Article '{body.article_title}' not found in topic index.",
         )
     except Exception:  # noqa: BLE001
-        logger.exception("Error looking up topic cluster for '%s'", request.article_title)
+        logger.exception("Error looking up topic cluster for '%s'", body.article_title)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/explain/{article_title}")
-async def explain_prediction(article_title: str):
+@limiter.limit("100/minute")
+async def explain_prediction(request: Request, article_title: str):
     """
     Get explanation/summary for an article's topic cluster.
     
@@ -217,7 +228,8 @@ async def explain_prediction(article_title: str):
 
 
 @app.get("/clusters/overview", response_model=List[ClusterSummary])
-async def clusters_overview():
+@limiter.limit("60/minute")
+async def clusters_overview(request: Request):
     """
     Return a list of all clusters with basic summary info.
     """
@@ -245,7 +257,8 @@ async def clusters_overview():
 
 
 @app.get("/clusters/{cluster_id}", response_model=ClusterSummary)
-async def cluster_detail(cluster_id: int):
+@limiter.limit("100/minute")
+async def cluster_detail(request: Request, cluster_id: int):
     """
     Get detailed summary for a single cluster.
     """
@@ -271,18 +284,24 @@ async def cluster_detail(cluster_id: int):
 
 
 @app.post("/api/topics/lookup", response_model=TopicClusterResponse)
-async def api_lookup_topic_cluster(request: TopicQueryRequest):
-    return await lookup_topic_cluster(request)
+@limiter.limit("100/minute")
+async def api_lookup_topic_cluster(request: Request, body: TopicQueryRequest):
+    """API-prefixed alias for /topics/lookup endpoint."""
+    return await lookup_topic_cluster(request, body)
 
 
 @app.get("/api/clusters/overview", response_model=List[ClusterSummary])
-async def api_clusters_overview():
-    return await clusters_overview()
+@limiter.limit("60/minute")
+async def api_clusters_overview(request: Request):
+    """API-prefixed alias for /clusters/overview endpoint."""
+    return await clusters_overview(request)
 
 
 @app.get("/api/clusters/{cluster_id}", response_model=ClusterSummary)
-async def api_cluster_detail(cluster_id: int):
-    return await cluster_detail(cluster_id)
+@limiter.limit("100/minute")
+async def api_cluster_detail(request: Request, cluster_id: int):
+    """API-prefixed alias for /clusters/{cluster_id} endpoint."""
+    return await cluster_detail(request, cluster_id)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 Explainability module for model predictions using SHAP.
 """
 
-from .shap_explainer import SHAPExplainer
-
-__all__ = ["SHAPExplainer"]
+# SHAP explainer removed - not used in MVP
+__all__ = []
 
