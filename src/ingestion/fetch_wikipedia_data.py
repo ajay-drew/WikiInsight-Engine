@@ -12,6 +12,8 @@ import logging
 import os
 from typing import Dict, Iterable, List, Set
 
+from tqdm import tqdm
+
 from src.common.logging_utils import setup_logging
 from .wikipedia_client import WikipediaClient
 
@@ -71,8 +73,8 @@ def _normalize_article(raw: Dict) -> Dict:
 
 
 def fetch_corpus(
-    max_articles: int = 5000,
-    per_query_limit: int = 200,
+    max_articles: int = 100,  # Reduced default for faster testing
+    per_query_limit: int = 50,  # Reduced default for faster testing
 ) -> List[Dict]:
     """
     Fetch a corpus of Wikipedia articles based on seed queries.
@@ -90,10 +92,13 @@ def fetch_corpus(
     seen_titles: Set[str] = set()
     articles: List[Dict] = []
 
-    for query in SEED_QUERIES:
-        logger.info("Searching for articles matching query: %s", query)
+    for query_idx, query in enumerate(SEED_QUERIES, 1):
+        logger.info("Processing query %d/%d: '%s'", query_idx, len(SEED_QUERIES), query)
         try:
-            for result in client.search_articles(query, limit=per_query_limit):
+            search_results = client.search_articles(query, limit=per_query_limit)
+            logger.info("Found %d search results for '%s'", len(search_results), query)
+            
+            for result in tqdm(search_results, desc=f"Fetching articles for '{query}'", leave=False):
                 title = result.get("title")
                 if not title or title in seen_titles:
                     continue
@@ -108,6 +113,9 @@ def fetch_corpus(
                     continue
 
                 articles.append(normalized)
+                if len(articles) % 10 == 0:
+                    logger.info("Fetched %d articles so far...", len(articles))
+                
                 if len(articles) >= max_articles:
                     logger.info("Reached max_articles=%d", max_articles)
                     return articles
