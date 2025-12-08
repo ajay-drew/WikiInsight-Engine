@@ -18,10 +18,12 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import yaml
+from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
-from .text_processor import TextProcessor
 from .embeddings import EmbeddingGenerator
+from .nltk_utils import normalize_text
+from .text_processor import TextProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +60,24 @@ def clean_articles(articles: List[Dict]) -> pd.DataFrame:
     processor = TextProcessor()
     records: List[Dict] = []
 
-    for art in articles:
+    for art in tqdm(articles, desc="Cleaning articles", unit="article"):
         title = art.get("title")
         text = art.get("text", "") or ""
+
+        # First apply lightweight structural cleaning (remove wiki markup).
         cleaned_text = processor.clean_text(text)
+
+        # Then apply NLTK-based normalization (lowercase, stopwords, lemma/stem)
+        # on the cleaned text. If NLTK or its data is unavailable, this will
+        # gracefully fall back to a regex-based normalizer.
+        nltk_cleaned = normalize_text(cleaned_text)
 
         records.append(
             {
                 "title": title,
                 "raw_text": text,
                 "cleaned_text": cleaned_text,
+                "nltk_cleaned_text": nltk_cleaned,
                 "categories": art.get("categories", []),
                 "links": art.get("links", []),
             }
@@ -83,7 +93,19 @@ def generate_embeddings(
     model_name: str,
     batch_size: int,
 ) -> pd.DataFrame:
-    texts = cleaned_df["cleaned_text"].fillna("").astype(str).tolist()
+    # Prefer the NLTK-normalized text when available, otherwise fall back to
+    # the older cleaned_text column for backward compatibility.
+    source_column = (
+        "nltk_cleaned_text" if "nltk_cleaned_text" in cleaned_df.columns else "cleaned_text"
+    )
+    texts = cleaned_df[source_column].fillna("").astype(str).tolist()
+    logger.info(
+        "Generating embeddings for %d articles using model '%s' (batch_size=%d). "
+        "This step can take several minutes for large corpora.",
+        len(texts),
+        model_name,
+        batch_size,
+    )
     generator = EmbeddingGenerator(model_name=model_name)
     embeddings = generator.encode_batch(texts, batch_size=batch_size)
 
@@ -112,38 +134,54 @@ def main() -> None:
     setup_logging()
     logger.info("Starting preprocessing pipeline")
 
-    config = load_config(CONFIG_PATH)
-    emb_cfg = config.get("preprocessing", {}).get("embeddings", {})
-    model_name = emb_cfg.get("model", "all-MiniLM-L6-v2")
-    batch_size = int(emb_cfg.get("batch_size", 32))
-
-    articles = load_raw_articles(RAW_DATA_PATH)
-    cleaned_df = clean_articles(articles)
-    emb_df = generate_embeddings(cleaned_df, model_name=model_name, batch_size=batch_size)
-    save_parquet(cleaned_df, CLEANED_ARTICLES_PATH)
-    save_parquet(emb_df, EMBEDDINGS_PATH)
-
-    # Optional MLflow logging
     try:
-        import mlflow
+        config = load_config(CONFIG_PATH)
+        emb_cfg = config.get("preprocessing", {}).get("embeddings", {})
+        model_name = emb_cfg.get("model", "all-MiniLM-L6-v2")
+        batch_size = int(emb_cfg.get("batch_size", 32))
 
-        ml_cfg = config.get("mlops", {}).get("mlflow", {})
-        tracking_uri = ml_cfg.get("tracking_uri")
-        experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
+        articles = load_raw_articles(RAW_DATA_PATH)
+        cleaned_df = clean_articles(articles)
+        emb_df = generate_embeddings(cleaned_df, model_name=model_name, batch_size=batch_size)
+        save_parquet(cleaned_df, CLEANED_ARTICLES_PATH)
+        save_parquet(emb_df, EMBEDDINGS_PATH)
 
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        if experiment_name:
-            mlflow.set_experiment(experiment_name)
+        # Optional MLflow logging
+        try:
+            import mlflow
 
-        with mlflow.start_run(run_name="preprocess_articles"):
-            mlflow.log_param("embedding_model", model_name)
-            mlflow.log_param("embedding_batch_size", batch_size)
-            mlflow.log_metric("n_articles", len(cleaned_df))
+            ml_cfg = config.get("mlops", {}).get("mlflow", {})
+            tracking_uri = ml_cfg.get("tracking_uri")
+            experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
+
+            if tracking_uri:
+                mlflow.set_tracking_uri(tracking_uri)
+            if experiment_name:
+                mlflow.set_experiment(experiment_name)
+
+            with mlflow.start_run(run_name="preprocess_articles"):
+                mlflow.log_param("embedding_model", model_name)
+                mlflow.log_param("embedding_batch_size", batch_size)
+                mlflow.log_metric("n_articles", len(cleaned_df))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MLflow logging skipped or failed: %s", exc)
+
+        logger.info("Preprocessing complete")
+    except FileNotFoundError as exc:
+        logger.error(
+            "Preprocessing failed because the raw articles file is missing: %s. "
+            "Run the ingestion stage first (e.g. `python -m src.ingestion.fetch_wikipedia_data` "
+            "or `dvc repro`).",
+            exc,
+        )
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("MLflow logging skipped or failed: %s", exc)
-
-    logger.info("Preprocessing complete")
+        logger.exception(
+            "Preprocessing pipeline failed: %s. Check the raw data file for corruption or "
+            "try re-running ingestion with a smaller sample using the `--sample` flag.",
+            exc,
+        )
+        raise
 
 
 if __name__ == "__main__":

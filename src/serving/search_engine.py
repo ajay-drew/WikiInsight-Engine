@@ -16,6 +16,8 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 from sklearn.neighbors import NearestNeighbors
 
+from src.preprocessing.nltk_utils import normalize_text as nltk_normalize_text
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,10 @@ class HybridSearchEngine:
         articles: List[Dict[str, str]],
         embeddings: np.ndarray,
         model,
+        *,
+        use_nltk_normalization: bool = True,
+        title_weight: float = 2.0,
+        body_weight: float = 1.0,
     ) -> None:
         """
         Initialize the hybrid search engine.
@@ -60,18 +66,32 @@ class HybridSearchEngine:
         self.embeddings = embeddings
         self.model = model
 
+        # Configuration flags
+        self._use_nltk_normalization = use_nltk_normalization
+        # We keep weights non-negative; if someone passes a negative weight,
+        # clamp it to zero to avoid surprising behavior.
+        self._title_weight = max(0.0, float(title_weight))
+        self._body_weight = max(0.0, float(body_weight))
+
         # Titles and texts extracted up-front for convenience
-        self._titles: List[str] = [a.get("title", "") for a in articles]
-        texts: List[str] = [a.get("text", "") for a in articles]
+        self._titles: List[str] = [a.get("title", "") or "" for a in articles]
+        texts: List[str] = [a.get("text", "") or "" for a in articles]
 
         # ---------------- Semantic index (k-NN over embeddings) ----------------
         # Use cosine distance; we will convert to similarity for ranking.
         self._nn = NearestNeighbors(metric="cosine")
         self._nn.fit(self.embeddings)
 
-        # ---------------- Keyword index (BM25 over tokenized text) -------------
-        tokenized_corpus = [self._tokenize(text) for text in texts]
-        self._bm25 = BM25Okapi(tokenized_corpus)
+        # ---------------- Keyword index (BM25 over tokenized title/body) -------
+        # We build two BM25 indexes:
+        #   - one over normalized titles (to strongly reward title matches)
+        #   - one over normalized article bodies
+        # Final scores are a weighted sum of the two.
+        title_tokens_corpus: List[List[str]] = [self._prepare_tokens(title) for title in self._titles]
+        body_tokens_corpus: List[List[str]] = [self._prepare_tokens(text) for text in texts]
+
+        self._bm25_title = BM25Okapi(title_tokens_corpus)
+        self._bm25_body = BM25Okapi(body_tokens_corpus)
 
         logger.info(
             "Initialized HybridSearchEngine with %d articles (dim=%d)",
@@ -84,14 +104,43 @@ class HybridSearchEngine:
     # --------------------------------------------------------------------- #
 
     @staticmethod
-    def _tokenize(text: str) -> List[str]:
+    def _tokenize_basic(text: str) -> List[str]:
         """
-        Simple whitespace tokenizer with lowercasing.
+        Basic whitespace tokenizer with lowercasing.
 
-        This keeps dependencies light. If needed, we can later wire in
-        spaCy or a more advanced tokenizer.
+        This is used as a fallback when NLTK-based normalization is disabled
+        or unavailable.
         """
         return [t for t in text.lower().split() if t]
+
+    def _prepare_tokens(self, text: str) -> List[str]:
+        """
+        Normalize and tokenize text for BM25.
+
+        When NLTK is enabled, this uses `normalize_text` from
+        `src.preprocessing.nltk_utils` which performs:
+          - lowercasing
+          - regex cleanup
+          - tokenization
+          - stopword removal
+          - lemmatization (and optional stemming, if enabled there)
+
+        If NLTK or its data packages are missing, normalize_text()
+        gracefully falls back to a simple regex-based tokenizer, so we
+        never fail hard here.
+        """
+        text = text or ""
+        if not text:
+            return []
+
+        if self._use_nltk_normalization:
+            normalized = nltk_normalize_text(text)
+            if not normalized:
+                return []
+            return normalized.split()
+
+        # Fallback path: simple whitespace-based tokenization.
+        return self._tokenize_basic(text)
 
     # --------------------------------------------------------------------- #
     # Semantic search
@@ -151,13 +200,18 @@ class HybridSearchEngine:
         if not query.strip():
             return []
 
-        tokens = self._tokenize(query)
+        tokens = self._prepare_tokens(query)
         if not tokens:
             return []
+        # Compute scores separately for titles and bodies, then combine
+        # them with a configurable weighting scheme.
+        scores_title = self._bm25_title.get_scores(tokens)
+        scores_body = self._bm25_body.get_scores(tokens)
 
-        scores = self._bm25.get_scores(tokens)
+        scores_combined = (self._title_weight * scores_title) + (self._body_weight * scores_body)
+
         # argsort in descending order of scores
-        ranked_indices = np.argsort(scores)[::-1]
+        ranked_indices = np.argsort(scores_combined)[::-1]
 
         results: List[Tuple[str, int]] = []
         for rank, idx in enumerate(ranked_indices[:top_k]):
@@ -243,6 +297,4 @@ class HybridSearchEngine:
 
         fused = self._rrf_merge(semantic_results, keyword_results)
         return fused[:top_k]
-
-
 

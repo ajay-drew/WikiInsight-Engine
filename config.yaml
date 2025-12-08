@@ -6,7 +6,16 @@ data:
     site: "en.wikipedia.org"
     api_rate_limit: 200  # requests per second
     cache_ttl: 3600  # seconds
-  
+
+# Ingestion configuration
+ingestion:
+  # Maximum number of links to keep per article when fetching from Wikipedia.
+  max_links_per_article: 50
+  # Articles with fewer words than this threshold are treated as stubs and dropped.
+  stub_min_words: 200
+  # Defaults used by the async ingestion CLI when no flags are provided.
+  default_max_articles: 1000
+  default_per_query_limit: 50
 
 # Models / Clustering
 models:
@@ -31,6 +40,18 @@ preprocessing:
   
   graph:
     similarity_threshold: 0.7
+
+# Search / BM25 configuration
+search:
+  bm25:
+    # Relative importance of matches in the article title vs body text.
+    # Higher title_weight means queries that appear in the title (e.g. "Python (programming language)")
+    # are ranked above articles where the term only appears in the body.
+    title_weight: 2.0
+    body_weight: 1.0
+    # When true, use NLTK-based normalization (lowercase, stopwords, lemmatization) for BM25.
+    # If NLTK or its data packages are missing, the code falls back to a simple regex tokenizer.
+    use_nltk_normalization: true
 
 # API
 api:

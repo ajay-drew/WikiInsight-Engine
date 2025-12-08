@@ -19,6 +19,8 @@ AI-driven system for unsupervised hierarchical topic clustering of Wikipedia art
 # Install dependencies
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
+# (Optional but recommended for best BM25 + preprocessing quality)
+python -m nltk.downloader punkt stopwords wordnet
 
 # Run data pipeline
 dvc repro  # OR: run_tools.cmd
@@ -43,11 +45,24 @@ tests/              # Test suite
 
 ## 🔧 Tech Stack
 
-**ML**: `scikit-learn` (AgglomerativeClustering), `sentence-transformers`, `spaCy`  
-**Search**: `rank-bm25`, `scikit-learn` (NearestNeighbors), RRF  
+**ML**: `scikit-learn` (AgglomerativeClustering), `sentence-transformers`, `spaCy`, `nltk`  
+**Search**: `rank-bm25`, `scikit-learn` (NearestNeighbors), RRF with multi-field BM25 (title + body)  
 **Backend**: `FastAPI`, `pandas`, `numpy`  
 **Frontend**: `React`, `Vite`, `Tailwind CSS`  
 **MLOps**: `DVC`, `MLflow`, `Prefect`
+
+### Ingestion & pipeline UX
+
+- **Async ingestion** (`src/ingestion/fetch_wikipedia_data.py`):
+  - Concurrent fetching via `AsyncWikipediaClient` with retry + exponential backoff.
+  - CLI flags: `--max-articles`, `--per-query-limit`, `--batch-size`, `--max-workers`, `--sample`, `--resume`.
+  - Filters out stub articles by length (< 200 words) and limits per-article links to 50.
+  - Uses `tqdm` progress bars and periodic checkpointing to `data/raw/articles.json` so long runs can resume.
+- **Preprocessing** (`src/preprocessing/process_data.py`):
+  - Cleans text and then applies NLTK-based normalization (lowercasing, stopwords, lemmatization/stemming) before embedding.
+  - Shows progress for article cleaning and logs expected durations for embedding generation.
+- **Clustering** (`src/modeling/cluster_topics.py`):
+  - Logs progress while summarizing clusters and surfaces clear error messages if inputs are missing or misconfigured.
 
 ## 📚 URLs
 

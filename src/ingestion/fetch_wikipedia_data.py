@@ -5,15 +5,18 @@ This is the main ingestion entrypoint that uses AsyncWikipediaClient to fetch
 multiple articles concurrently, significantly speeding up data ingestion.
 """
 
+import argparse
 import asyncio
 import json
 import logging
 import os
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
+
+from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
-from .wikipedia_client_async import AsyncWikipediaClient
 from .constants import RAW_DATA_PATH, SEED_QUERIES
+from .wikipedia_client_async import AsyncWikipediaClient
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +61,15 @@ def _normalize_article(raw: Dict) -> Dict:
 
 
 async def fetch_corpus_async(
-    max_articles: int = 100,
+    max_articles: int = 1000,
     per_query_limit: int = 50,
-    batch_size: int = 10,
+    batch_size: int = 20,
     max_workers: int = 10,
+    *,
+    stub_min_words: int = 200,
+    existing_articles: Optional[List[Dict]] = None,
+    checkpoint_path: Optional[str] = None,
+    checkpoint_interval: int = 1000,
 ) -> List[Dict]:
     """
     Fetch a corpus of Wikipedia articles concurrently (no sequential requests).
@@ -86,6 +94,21 @@ async def fetch_corpus_async(
     seen_titles: set[str] = set()
     articles: List[Dict] = []
 
+    # If we are resuming from an existing raw file, keep those articles and
+    # avoid re-fetching their titles.
+    if existing_articles:
+        for art in existing_articles:
+            title = art.get("title")
+            if title:
+                seen_titles.add(str(title))
+                articles.append(art)
+
+        logger.info(
+            "Loaded %d existing articles; will fetch up to %d total.",
+            len(articles),
+            max_articles,
+        )
+
     try:
         # Process all queries concurrently
         search_tasks = [
@@ -95,6 +118,7 @@ async def fetch_corpus_async(
 
         # Collect all unique titles
         titles_to_fetch: List[str] = []
+        current_count = len(articles)
         for query_idx, search_results in enumerate(all_search_results):
             query = SEED_QUERIES[query_idx]
             logger.info("Found %d search results for '%s'", len(search_results), query)
@@ -105,38 +129,69 @@ async def fetch_corpus_async(
                     seen_titles.add(title)
                     titles_to_fetch.append(title)
                     
-                    if len(titles_to_fetch) >= max_articles:
+                    if current_count + len(titles_to_fetch) >= max_articles:
                         break
             
-            if len(titles_to_fetch) >= max_articles:
+            if current_count + len(titles_to_fetch) >= max_articles:
                 break
 
         if not titles_to_fetch:
             logger.warning("No articles to fetch")
             return []
 
-        # Limit to max_articles
-        titles_to_fetch = titles_to_fetch[:max_articles]
-        logger.info("Fetching %d articles concurrently...", len(titles_to_fetch))
+        # Limit to max_articles (taking into account any existing/resumed articles)
+        remaining_budget = max(0, max_articles - current_count)
+        titles_to_fetch = titles_to_fetch[:remaining_budget]
+        logger.info("Fetching %d new articles concurrently...", len(titles_to_fetch))
 
-        # Fetch ALL articles concurrently (not in batches)
-        batch_articles = await client.get_articles_batch(
-            titles_to_fetch, fetch_links=False, fetch_categories=False
-        )
+        if not titles_to_fetch:
+            logger.info("No new titles to fetch (budget already satisfied by existing articles).")
+            return articles
 
-        # Process and normalize articles
-        for article in batch_articles:
-            if not article:
-                continue
+        checkpoint_path = checkpoint_path or RAW_DATA_PATH
 
-            normalized = _normalize_article(article)
-            if not normalized.get("title") or not normalized.get("text"):
-                continue
+        # Fetch articles in batches so we can report progress and checkpoint regularly.
+        progress = tqdm(total=len(titles_to_fetch), desc="Fetching articles", unit="article")
+        try:
+            for i in range(0, len(titles_to_fetch), batch_size):
+                batch_titles = titles_to_fetch[i : i + batch_size]
+                batch_articles = await client.get_articles_batch(
+                    batch_titles,
+                    fetch_links=False,
+                    fetch_categories=False,
+                    max_links=50,
+                )
 
-            articles.append(normalized)
+                # Process and normalize articles in this batch
+                for article in batch_articles:
+                    progress.update(1)
+                    if not article:
+                        continue
 
-            if len(articles) % 10 == 0:
-                logger.info("Processed %d articles so far...", len(articles))
+                    normalized = _normalize_article(article)
+                    text = normalized.get("text") or ""
+                    # Filter out stub articles with very few words to avoid
+                    # extremely short pages that add little value.
+                    if len(text.split()) < stub_min_words:
+                        continue
+
+                    if not normalized.get("title") or not text:
+                        continue
+
+                    articles.append(normalized)
+
+                    # Periodically checkpoint progress so long runs can resume.
+                    if checkpoint_path and len(articles) % checkpoint_interval == 0:
+                        logger.info(
+                            "Checkpoint reached at %d articles; flushing to %s",
+                            len(articles),
+                            checkpoint_path,
+                        )
+                        save_articles(articles, checkpoint_path)
+
+                logger.info("Processed %d/%d titles so far...", min(i + batch_size, len(titles_to_fetch)), len(titles_to_fetch))
+        finally:
+            progress.close()
 
     except Exception:  # noqa: BLE001
         logger.exception("Error during async corpus fetch")
@@ -157,18 +212,103 @@ def save_articles(articles: List[Dict], path: str = RAW_DATA_PATH) -> None:
     logger.info("Saved %d articles to %s", len(articles), path)
 
 
-async def main_async() -> None:
+async def main_async(
+    max_articles: int,
+    per_query_limit: int,
+    batch_size: int,
+    max_workers: int,
+    sample: Optional[int],
+    resume: bool,
+) -> None:
     """Async main function."""
     setup_logging()
     logger.info("Starting async Wikipedia ingestion")
-    articles = await fetch_corpus_async()
+
+    if sample is not None:
+        max_articles = min(max_articles, sample)
+        logger.info("Sample mode enabled; limiting to %d articles", max_articles)
+
+    existing_articles: Optional[List[Dict]] = None
+    if resume and os.path.exists(RAW_DATA_PATH):
+        logger.info("Resume mode enabled; loading existing articles from %s", RAW_DATA_PATH)
+        existing_articles = []
+        with open(RAW_DATA_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    existing_articles.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+
+        logger.info("Loaded %d existing articles from previous run", len(existing_articles))
+
+    articles = await fetch_corpus_async(
+        max_articles=max_articles,
+        per_query_limit=per_query_limit,
+        batch_size=batch_size,
+        max_workers=max_workers,
+        existing_articles=existing_articles,
+        checkpoint_path=RAW_DATA_PATH,
+    )
     save_articles(articles, RAW_DATA_PATH)
     logger.info("Ingestion complete")
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Fetch a corpus of Wikipedia articles.")
+    parser.add_argument(
+        "--max-articles",
+        type=int,
+        default=1000,
+        help="Maximum number of articles to fetch (default: 1000).",
+    )
+    parser.add_argument(
+        "--per-query-limit",
+        type=int,
+        default=50,
+        help="Maximum search results per seed query (default: 50).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=20,
+        help="Number of articles to fetch concurrently in each batch (default: 20).",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=10,
+        help="Maximum number of concurrent worker threads for mwclient calls (default: 10).",
+    )
+    parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="Optional quick-sample mode; if set, limits the run to this many articles.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from an existing raw articles file if present, instead of starting from scratch.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    """Main entry point that runs async function."""
-    asyncio.run(main_async())
+    """Main entry point that parses CLI arguments and runs the async function."""
+    args = parse_args()
+    asyncio.run(
+        main_async(
+            max_articles=args.max_articles,
+            per_query_limit=args.per_query_limit,
+            batch_size=args.batch_size,
+            max_workers=args.max_workers,
+            sample=args.sample,
+            resume=args.resume,
+        )
+    )
 
 
 if __name__ == "__main__":

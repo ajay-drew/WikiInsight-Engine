@@ -7,31 +7,51 @@ multiple articles concurrently, significantly speeding up data ingestion.
 
 import asyncio
 import logging
-from typing import Optional, Dict, List
+import random
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional
 
 import mwclient
-from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+
+async def _async_sleep_with_backoff(attempt: int, base_delay: float = 0.5, max_delay: float = 8.0) -> None:
+    """Async sleep helper for exponential backoff with jitter."""
+    delay = min(max_delay, base_delay * (2**attempt))
+    delay *= 1 + random.uniform(-0.2, 0.2)
+    if delay > 0:
+        await asyncio.sleep(delay)
 
 
 class AsyncWikipediaClient:
     """Async client for interacting with Wikipedia API using mwclient."""
 
-    def __init__(self, site: str = "en.wikipedia.org", max_workers: int = 10):
+    def __init__(self, site: str = "en.wikipedia.org", max_workers: int = 10, *, max_retries: int = 3):
         """
         Initialize async Wikipedia client.
 
         Args:
             site: Wikipedia site (default: en.wikipedia.org)
             max_workers: Maximum number of concurrent workers for fetching articles
+            max_retries: Maximum number of retries for transient failures.
         """
         self.site = mwclient.Site(site)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
-        logger.info(f"Initialized async Wikipedia client for {site} (max_workers={max_workers})")
+        self.max_retries = max(1, int(max_retries))
+        logger.info(
+            "Initialized async Wikipedia client for %s (max_workers=%d, max_retries=%d)",
+            site,
+            max_workers,
+            self.max_retries,
+        )
 
     async def get_article(
-        self, title: str, fetch_links: bool = False, fetch_categories: bool = False
+        self,
+        title: str,
+        fetch_links: bool = False,
+        fetch_categories: bool = False,
+        max_links: int = 50,
     ) -> Optional[Dict]:
         """
         Fetch article by title asynchronously.
@@ -45,57 +65,76 @@ class AsyncWikipediaClient:
             Article data dictionary or None
         """
         loop = asyncio.get_event_loop()
-        try:
-            # Run blocking mwclient calls in thread pool
-            page = await loop.run_in_executor(self.executor, lambda: self.site.pages[title])
-
-            if not page.exists:
-                logger.debug(f"Article '{title}' does not exist")
-                return None
-
-            # Fetch text first (most important)
-            text = await loop.run_in_executor(self.executor, lambda: page.text())
-
-            # Fetch other data conditionally (these can be slow)
-            categories = []
-            links = []
-            revisions = []
-
-            if fetch_categories:
-                try:
-                    categories = await loop.run_in_executor(
-                        self.executor, lambda: list(page.categories())
-                    )
-                except Exception:
-                    logger.debug(f"Could not fetch categories for '{title}'")
-
-            if fetch_links:
-                try:
-                    # Limit links to avoid fetching thousands
-                    all_links = await loop.run_in_executor(
-                        self.executor, lambda: list(page.links())
-                    )
-                    links = all_links[:100]  # Limit to first 100 links
-                except Exception:
-                    logger.debug(f"Could not fetch links for '{title}'")
-
+        for attempt in range(self.max_retries):
             try:
-                revisions = await loop.run_in_executor(
-                    self.executor, lambda: list(page.revisions(max_items=1))
-                )
-            except Exception:
-                logger.debug(f"Could not fetch revisions for '{title}'")
+                # Run blocking mwclient calls in thread pool
+                page = await loop.run_in_executor(self.executor, lambda: self.site.pages[title])
 
-            return {
-                "title": page.name,
-                "text": text,
-                "revisions": revisions,
-                "categories": categories,
-                "links": links,
-            }
-        except Exception as e:
-            logger.error(f"Error fetching article '{title}': {e}")
-            return None
+                if not page.exists:
+                    logger.debug("Article '%s' does not exist", title)
+                    return None
+
+                # Fetch text first (most important)
+                text = await loop.run_in_executor(self.executor, lambda: page.text())
+
+                # Fetch other data conditionally (these can be slow)
+                categories: List[str] = []
+                links: List[str] = []
+                revisions: List[Dict] = []
+
+                if fetch_categories:
+                    try:
+                        categories = await loop.run_in_executor(
+                            self.executor,
+                            lambda: list(page.categories()),
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not fetch categories for '%s'", title)
+
+                if fetch_links:
+                    try:
+                        # Limit links to avoid fetching thousands
+                        all_links = await loop.run_in_executor(
+                            self.executor,
+                            lambda: list(page.links()),
+                        )
+                        links = all_links[:max_links]
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not fetch links for '%s'", title)
+
+                try:
+                    revisions = await loop.run_in_executor(
+                        self.executor,
+                        lambda: list(page.revisions(max_items=1)),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("Could not fetch revisions for '%s'", title)
+
+                return {
+                    "title": page.name,
+                    "text": text,
+                    "revisions": revisions,
+                    "categories": categories,
+                    "links": links,
+                }
+            except Exception as exc:  # noqa: BLE001
+                if attempt + 1 >= self.max_retries:
+                    logger.error(
+                        "Error fetching article '%s' after %d attempts: %s",
+                        title,
+                        self.max_retries,
+                        exc,
+                    )
+                    return None
+
+                logger.warning(
+                    "Transient error fetching article '%s' (attempt %d/%d): %s; retrying...",
+                    title,
+                    attempt + 1,
+                    self.max_retries,
+                    exc,
+                )
+                await _async_sleep_with_backoff(attempt)
 
     async def search_articles(self, query: str, limit: int = 10) -> List[Dict]:
         """
@@ -109,22 +148,51 @@ class AsyncWikipediaClient:
             List of article metadata
         """
         loop = asyncio.get_event_loop()
-        results = []
 
-        def _search():
-            search_results = []
-            for page in self.site.search(query, max_items=limit):
-                search_results.append({
-                    "title": page.get("title"),
-                    "snippet": page.get("snippet"),
-                })
-            return search_results
+        async def _search_with_retries() -> List[Dict]:
+            for attempt in range(self.max_retries):
+                try:
+                    def _search() -> List[Dict]:
+                        search_results: List[Dict] = []
+                        for page in self.site.search(query, max_items=limit):
+                            search_results.append(
+                                {
+                                    "title": page.get("title"),
+                                    "snippet": page.get("snippet"),
+                                }
+                            )
+                        return search_results
 
-        results = await loop.run_in_executor(self.executor, _search)
-        return results
+                    return await loop.run_in_executor(self.executor, _search)
+                except Exception as exc:  # noqa: BLE001
+                    if attempt + 1 >= self.max_retries:
+                        logger.error(
+                            "Error searching articles for query '%s' after %d attempts: %s",
+                            query,
+                            self.max_retries,
+                            exc,
+                        )
+                        return []
+
+                    logger.warning(
+                        "Transient error during search for query '%s' (attempt %d/%d): %s; retrying...",
+                        query,
+                        attempt + 1,
+                        self.max_retries,
+                        exc,
+                    )
+                    await _async_sleep_with_backoff(attempt)
+
+            return []
+
+        return await _search_with_retries()
 
     async def get_articles_batch(
-        self, titles: List[str], fetch_links: bool = False, fetch_categories: bool = False
+        self,
+        titles: List[str],
+        fetch_links: bool = False,
+        fetch_categories: bool = False,
+        max_links: int = 50,
     ) -> List[Optional[Dict]]:
         """
         Fetch multiple articles concurrently.
@@ -138,7 +206,12 @@ class AsyncWikipediaClient:
             List of article dictionaries (None for failed fetches)
         """
         tasks = [
-            self.get_article(title, fetch_links=fetch_links, fetch_categories=fetch_categories)
+            self.get_article(
+                title,
+                fetch_links=fetch_links,
+                fetch_categories=fetch_categories,
+                max_links=max_links,
+            )
             for title in titles
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)

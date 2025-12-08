@@ -12,10 +12,6 @@ logger = logging.getLogger(__name__)
 class GraphBuilder:
     """Build graphs from Wikipedia data."""
     
-    def __init__(self):
-        """Initialize graph builder."""
-        self.graph = nx.DiGraph()
-    
     def build_citation_graph(self, articles: List[Dict]) -> nx.DiGraph:
         """
         Build citation graph from articles.

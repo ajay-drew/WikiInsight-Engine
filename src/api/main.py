@@ -83,15 +83,25 @@ async def lifespan(app: FastAPI):
             emb_df = pd.read_parquet(EMBEDDINGS_PATH)
             embeddings = np.vstack(emb_df["embedding"].to_list())
 
-            # Load embedding model
+            # Load embedding model and search configuration
             config = yaml.safe_load(open(CONFIG_PATH, "r"))
-            model_name = config.get("preprocessing", {}).get("embeddings", {}).get("model", "all-MiniLM-L6-v2")
+            model_name = config.get("preprocessing", {}).get("embeddings", {}).get(
+                "model",
+                "all-MiniLM-L6-v2",
+            )
+            bm25_cfg = config.get("search", {}).get("bm25", {}) if isinstance(config, dict) else {}
+            title_weight = float(bm25_cfg.get("title_weight", 2.0))
+            body_weight = float(bm25_cfg.get("body_weight", 1.0))
+            use_nltk_normalization = bool(bm25_cfg.get("use_nltk_normalization", True))
             embedding_model = EmbeddingGenerator(model_name=model_name)
 
             _search_engine = HybridSearchEngine(
                 articles=articles,
                 embeddings=embeddings,
                 model=embedding_model.model,
+                use_nltk_normalization=use_nltk_normalization,
+                title_weight=title_weight,
+                body_weight=body_weight,
             )
             logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
         else:
@@ -181,9 +191,6 @@ class SearchResponse(BaseModel):
     query: str
     results: List[SearchResultResponse]
     total_results: int
-
-
-_topic_index: Optional[TopicIndex] = None
 
 
 @app.middleware("http")

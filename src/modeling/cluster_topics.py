@@ -29,6 +29,7 @@ import yaml
 from sklearn.cluster import AgglomerativeClustering, KMeans, MiniBatchKMeans
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
 
@@ -149,12 +150,11 @@ def _tokenize(text: str) -> List[str]:
     """
     Tokenize text into normalized word tokens with stopword and noise filtering.
 
-    The goal here is not perfect linguistic analysis but robust, fast extraction
-    of *topic words* that are:
-      - alphabetic (no pure punctuation/numbers)
-      - lower-cased
-      - at least 3 characters long
-      - not obvious stop words
+    For consistency with the wider preprocessing stack, this function mirrors
+    the behaviour of the NLTK-based normalizer used before embeddings. We keep
+    the spaCy path for environments where it is already configured, but fall
+    back to a simple regex-based tokenizer when neither spaCy nor NLTK helpers
+    are available.
     """
     text = text or ""
 
@@ -173,7 +173,7 @@ def _tokenize(text: str) -> List[str]:
             tokens.append(lemma)
         return tokens
 
-    # Fallback: simple regex-based tokenization.
+    # Fallback: simple regex-based tokenization aligned with our NLTK pipeline.
     tokens = []
     for match in _WORD_RE.finditer(text.lower()):
         token = match.group(0)
@@ -377,7 +377,11 @@ def compute_cluster_summaries(
     # and Euclidean distance to cluster center for representative articles.
     # ------------------------------------------------------------------
     rows: List[Dict] = []
-    for cluster_id, indices in cluster_to_indices.items():
+    for cluster_id, indices in tqdm(
+        cluster_to_indices.items(),
+        total=len(cluster_to_indices),
+        desc="Summarizing clusters",
+    ):
         # Representative/top articles by proximity to centroid
         cluster_embeddings = embeddings[indices]
         center = centers[cluster_id].reshape(1, -1)
@@ -424,75 +428,99 @@ def main() -> None:
     setup_logging()
     logger.info("Starting topic clustering pipeline")
 
-    config = load_config(CONFIG_PATH)
-    model_cfg = config.get("models", {}).get("clustering", {})
-    nn_cfg = config.get("models", {}).get("neighbors", {})
-
-    emb_df, embeddings = load_embeddings()
-    cleaned_df = load_cleaned_articles()
-
-    if len(emb_df) != len(cleaned_df):
-        logger.warning(
-            "Embeddings and cleaned articles have different lengths: %d vs %d",
-            len(emb_df),
-            len(cleaned_df),
-        )
-
-    titles = emb_df["title"].astype(str).tolist()
-    cleaned_texts = cleaned_df["cleaned_text"].astype(str).tolist()
-
-    model, labels = make_clusterer(embeddings, model_cfg)
-    nn_index = build_nn_index(embeddings, nn_cfg)
-
-    # Prepare outputs
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    joblib.dump(model, KMEANS_MODEL_PATH)
-    joblib.dump(nn_index, NN_INDEX_PATH)
-
-    assignments_df = pd.DataFrame({"title": titles, "cluster_id": labels.astype(int)})
-    assignments_df.to_parquet(CLUSTER_ASSIGNMENTS_PATH, index=False)
-
-    centers = model.cluster_centers_
-    summaries_df = compute_cluster_summaries(
-        titles=titles,
-        cleaned_texts=cleaned_texts,
-        embeddings=embeddings,
-        labels=labels,
-        centers=centers,
-    )
-    summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
-
-    # Basic metrics
-    metrics = {
-        "n_articles": int(len(titles)),
-        "n_clusters": int(len(summaries_df)),
-    }
-    save_json(metrics, METRICS_PATH)
-
-    # Optional MLflow logging
     try:
-        import mlflow
+        config = load_config(CONFIG_PATH)
+        model_cfg = config.get("models", {}).get("clustering", {})
+        nn_cfg = config.get("models", {}).get("neighbors", {})
 
-        ml_cfg = config.get("mlops", {}).get("mlflow", {})
-        tracking_uri = ml_cfg.get("tracking_uri")
-        experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
+        emb_df, embeddings = load_embeddings()
+        cleaned_df = load_cleaned_articles()
 
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        if experiment_name:
-            mlflow.set_experiment(experiment_name)
+        if len(emb_df) != len(cleaned_df):
+            logger.warning(
+                "Embeddings and cleaned articles have different lengths: %d vs %d",
+                len(emb_df),
+                len(cleaned_df),
+            )
 
-        with mlflow.start_run(run_name="cluster_topics"):
-            for key, value in model_cfg.items():
-                mlflow.log_param(f"clustering_{key}", value)
-            for key, value in nn_cfg.items():
-                mlflow.log_param(f"neighbors_{key}", value)
-            for key, value in metrics.items():
-                mlflow.log_metric(key, value)
+        titles = emb_df["title"].astype(str).tolist()
+        cleaned_texts = cleaned_df["cleaned_text"].astype(str).tolist()
+
+        logger.info(
+            "Clustering %d articles into ~%s clusters (method=%s)...",
+            len(titles),
+            model_cfg.get("n_clusters", "unknown"),
+            model_cfg.get("method", "kmeans"),
+        )
+        model, labels = make_clusterer(embeddings, model_cfg)
+
+        logger.info("Building nearest-neighbor index for similar-article lookup...")
+        nn_index = build_nn_index(embeddings, nn_cfg)
+
+        # Prepare outputs
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        joblib.dump(model, KMEANS_MODEL_PATH)
+        joblib.dump(nn_index, NN_INDEX_PATH)
+
+        assignments_df = pd.DataFrame({"title": titles, "cluster_id": labels.astype(int)})
+        assignments_df.to_parquet(CLUSTER_ASSIGNMENTS_PATH, index=False)
+
+        centers = model.cluster_centers_
+        summaries_df = compute_cluster_summaries(
+            titles=titles,
+            cleaned_texts=cleaned_texts,
+            embeddings=embeddings,
+            labels=labels,
+            centers=centers,
+        )
+        summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
+
+        # Basic metrics
+        metrics = {
+            "n_articles": int(len(titles)),
+            "n_clusters": int(len(summaries_df)),
+        }
+        save_json(metrics, METRICS_PATH)
+
+        # Optional MLflow logging
+        try:
+            import mlflow
+
+            ml_cfg = config.get("mlops", {}).get("mlflow", {})
+            tracking_uri = ml_cfg.get("tracking_uri")
+            experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
+
+            if tracking_uri:
+                mlflow.set_tracking_uri(tracking_uri)
+            if experiment_name:
+                mlflow.set_experiment(experiment_name)
+
+            with mlflow.start_run(run_name="cluster_topics"):
+                for key, value in model_cfg.items():
+                    mlflow.log_param(f"clustering_{key}", value)
+                for key, value in nn_cfg.items():
+                    mlflow.log_param(f"neighbors_{key}", value)
+                for key, value in metrics.items():
+                    mlflow.log_metric(key, value)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("MLflow logging for clustering skipped or failed: %s", exc)
+
+        logger.info("Topic clustering complete. Wrote artifacts to %s", MODEL_DIR)
+    except FileNotFoundError as exc:
+        logger.error(
+            "Clustering failed because required inputs are missing: %s. "
+            "Make sure the preprocessing stage has completed successfully "
+            "and produced both embeddings and cleaned_articles parquet files.",
+            exc,
+        )
+        raise
     except Exception as exc:  # noqa: BLE001
-        logger.warning("MLflow logging for clustering skipped or failed: %s", exc)
-
-    logger.info("Topic clustering complete. Wrote artifacts to %s", MODEL_DIR)
+        logger.exception(
+            "Clustering pipeline failed: %s. Consider reducing 'n_clusters' in config.yaml "
+            "or re-running preprocessing to regenerate embeddings.",
+            exc,
+        )
+        raise
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ python-dateutil>=2.8.0
 # NLP & Text Processing
 sentence-transformers>=2.2.0
 spacy>=3.6.0
+nltk>=3.8.0
 
 # Graph Processing
 networkx>=3.1

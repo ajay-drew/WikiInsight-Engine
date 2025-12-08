@@ -108,6 +108,39 @@ def test_keyword_search_finds_exact_match(search_engine) -> None:
     assert "Cooking Pasta" in titles
 
 
+def test_bm25_prefers_title_match_over_body_only(mock_model) -> None:
+    """
+    Multi-field BM25 should prefer an article where the query appears in the title
+    over one where it only appears in the body text.
+    """
+    articles = [
+        {
+            "title": "Python (programming language)",
+            "text": "Python is a popular programming language used for many applications.",
+        },
+        {
+            "title": "Monty Python",
+            "text": "This article discusses the comedy group Monty Python and its history.",
+        },
+    ]
+
+    # Two simple embeddings – values do not matter for pure keyword search.
+    embeddings = np.eye(2, 16)
+
+    engine = HybridSearchEngine(
+        articles=articles,
+        embeddings=embeddings,
+        model=mock_model,
+    )
+
+    results = engine._search_keyword("Python", top_k=2)
+    assert results, "Expected at least one BM25 result"
+    top_title, _ = results[0]
+    assert (
+        top_title == "Python (programming language)"
+    ), "Title match should be ranked ahead of body-only mentions"
+
+
 def test_rrf_merge_prefers_consistently_high_ranked_items() -> None:
     """
     Manually test RRF merging logic.

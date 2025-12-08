@@ -1,7 +1,7 @@
 """
-Explainability module for model predictions using SHAP.
+Explainability module for model predictions.
+
+Currently empty - reserved for future explainability features.
 """
 
-# SHAP explainer removed - not used in MVP
 __all__ = []
-
