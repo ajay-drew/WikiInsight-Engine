@@ -20,7 +20,7 @@ import math
 import os
 import re
 from collections import Counter, defaultdict
-from typing import Dict, List, Tuple, Iterable, Set
+from typing import Dict, List, Tuple, Set
 
 import joblib
 import numpy as np
@@ -475,33 +475,89 @@ def main() -> None:
         )
         summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
 
+        # Calculate cluster size distribution
+        cluster_sizes = summaries_df["size"].values if "size" in summaries_df.columns else []
+        cluster_size_metrics = {}
+        if len(cluster_sizes) > 0:
+            cluster_size_metrics = {
+                "cluster_size_min": int(cluster_sizes.min()),
+                "cluster_size_max": int(cluster_sizes.max()),
+                "cluster_size_mean": float(cluster_sizes.mean()),
+                "cluster_size_std": float(cluster_sizes.std()),
+            }
+        
+        # Calculate silhouette score if feasible (can be expensive for large datasets)
+        silhouette_score = None
+        try:
+            from sklearn.metrics import silhouette_score
+            # Sample for large datasets to avoid memory issues
+            sample_size = min(5000, len(embeddings))
+            if sample_size < len(embeddings):
+                import numpy as np
+                indices = np.random.choice(len(embeddings), sample_size, replace=False)
+                sample_embeddings = embeddings[indices]
+                sample_labels = labels[indices]
+                silhouette_score = float(silhouette_score(sample_embeddings, sample_labels))
+                logger.info("Calculated silhouette score on sample of %d articles", sample_size)
+            else:
+                silhouette_score = float(silhouette_score(embeddings, labels))
+                logger.info("Calculated silhouette score on full dataset")
+        except Exception as exc:
+            logger.warning("Failed to calculate silhouette score: %s", exc)
+        
+        # Calculate Davies-Bouldin index if feasible
+        davies_bouldin = None
+        try:
+            from sklearn.metrics import davies_bouldin_score
+            # Sample for large datasets
+            sample_size = min(5000, len(embeddings))
+            if sample_size < len(embeddings):
+                import numpy as np
+                indices = np.random.choice(len(embeddings), sample_size, replace=False)
+                sample_embeddings = embeddings[indices]
+                sample_labels = labels[indices]
+                davies_bouldin = float(davies_bouldin_score(sample_embeddings, sample_labels))
+            else:
+                davies_bouldin = float(davies_bouldin_score(embeddings, labels))
+            logger.info("Calculated Davies-Bouldin index")
+        except Exception as exc:
+            logger.warning("Failed to calculate Davies-Bouldin index: %s", exc)
+        
         # Basic metrics
         metrics = {
             "n_articles": int(len(titles)),
             "n_clusters": int(len(summaries_df)),
         }
+        metrics.update(cluster_size_metrics)
+        if silhouette_score is not None:
+            metrics["silhouette_score"] = silhouette_score
+        if davies_bouldin is not None:
+            metrics["davies_bouldin_index"] = davies_bouldin
+        
         save_json(metrics, METRICS_PATH)
 
-        # Optional MLflow logging
+        # Enhanced MLflow logging
+        from src.common.mlflow_utils import (
+            log_metrics_safely,
+            log_params_safely,
+            start_mlflow_run,
+        )
+        
         try:
-            import mlflow
-
-            ml_cfg = config.get("mlops", {}).get("mlflow", {})
-            tracking_uri = ml_cfg.get("tracking_uri")
-            experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
-
-            if tracking_uri:
-                mlflow.set_tracking_uri(tracking_uri)
-            if experiment_name:
-                mlflow.set_experiment(experiment_name)
-
-            with mlflow.start_run(run_name="cluster_topics"):
-                for key, value in model_cfg.items():
-                    mlflow.log_param(f"clustering_{key}", value)
-                for key, value in nn_cfg.items():
-                    mlflow.log_param(f"neighbors_{key}", value)
-                for key, value in metrics.items():
-                    mlflow.log_metric(key, value)
+            with start_mlflow_run("cluster_topics"):
+                # Log parameters
+                log_params_safely(model_cfg, prefix="clustering")
+                log_params_safely(nn_cfg, prefix="neighbors")
+                
+                # Log metrics
+                log_metrics_safely(metrics)
+                
+                # Log keyword extraction metrics if available
+                if "keywords" in summaries_df.columns:
+                    avg_keywords = summaries_df["keywords"].apply(len).mean() if len(summaries_df) > 0 else 0
+                    log_metrics_safely({"avg_keywords_per_cluster": float(avg_keywords)})
+                
+                logger.info("Logged clustering metrics to MLflow")
         except Exception as exc:  # noqa: BLE001
             logger.warning("MLflow logging for clustering skipped or failed: %s", exc)
 

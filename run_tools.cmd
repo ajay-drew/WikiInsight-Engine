@@ -47,14 +47,23 @@ if errorlevel 1 (
 
 echo.
 echo Running: dvc repro
-echo This will execute:
-echo   - fetch_data: Fetch Wikipedia articles
-echo   - preprocess: Clean text and generate embeddings
-echo   - cluster_topics: Cluster articles and build topic index
 echo.
-echo NOTE: This generates artifacts required for:
-echo   - Topic clustering and lookup
-echo   - Hybrid search engine (semantic + keyword search)
+echo This will execute the following pipeline stages:
+echo   1. fetch_data: Fetch Wikipedia articles via mwclient API
+echo   2. preprocess: Clean text, normalize with NLTK, generate embeddings
+echo   3. cluster_topics: Cluster articles, extract keywords, build k-NN index
+echo.
+echo Generated artifacts:
+echo   - data/raw/articles.json (raw Wikipedia articles)
+echo   - data/processed/cleaned_articles.parquet (cleaned text)
+echo   - data/features/embeddings.parquet (sentence-transformer embeddings)
+echo   - models/clustering/*.pkl (clustering model, k-NN index)
+echo   - models/clustering/*.parquet (cluster assignments, summaries)
+echo.
+echo These artifacts are required for:
+echo   - Topic clustering and lookup endpoints
+echo   - Hybrid search engine (semantic + keyword search with RRF)
+echo   - Cluster exploration and monitoring
 echo.
 
 dvc repro
@@ -107,23 +116,21 @@ echo.
 echo MLflow UI: http://localhost:5000
 echo.
 echo Tracked Metrics:
-echo   - Clustering metrics (silhouette score, inertia, etc.)
+echo   - Ingestion metrics (articles fetched, filtered, duration)
+echo   - Preprocessing metrics (vocabulary size, embedding dimensions)
+echo   - Clustering metrics (silhouette score, Davies-Bouldin index)
+echo   - Drift detection scores
+echo   - Cluster stability metrics (ARI, NMI)
 echo   - Model parameters (n_clusters, method, etc.)
-echo   - Experiment runs
+echo   - Experiment runs and artifacts
 echo.
 echo Press any key to exit this window...
 echo (MLflow UI will continue running in a separate window)
 pause >nul
 
-REM ------------------------
-REM 3) Redis (optional)
-REM ------------------------
-REM Uncomment and adjust this block when Redis is installed and you want to run it:
-REM echo.
-REM echo [3/3] Starting Redis Server
-REM echo ----------------------------------------
-REM echo Starting Redis server ...
-REM start "Redis" cmd /k "redis-server"
+REM Note: Redis and PostgreSQL services were removed as they are not used
+REM in the current codebase. The system uses SQLite for MLflow and
+REM in-memory data structures for the API.
 
 endlocal
 

@@ -195,11 +195,22 @@ class SearchResponse(BaseModel):
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Log incoming requests and responses with latency for easier debugging."""
+    """Log incoming requests and responses with latency, and track metrics."""
+    from src.monitoring.api_metrics import record_api_request
+    
     start = perf_counter()
     try:
         response = await call_next(request)
         duration_ms = (perf_counter() - start) * 1000
+        
+        # Record metrics
+        record_api_request(
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=response.status_code,
+            latency_ms=duration_ms,
+        )
+        
         logger.info(
             "HTTP %s %s -> %s in %.2fms",
             request.method,
@@ -210,6 +221,15 @@ async def log_requests(request: Request, call_next):
         return response
     except Exception:  # noqa: BLE001
         duration_ms = (perf_counter() - start) * 1000
+        
+        # Record error
+        record_api_request(
+            endpoint=request.url.path,
+            method=request.method,
+            status_code=500,
+            latency_ms=duration_ms,
+        )
+        
         logger.exception(
             "Unhandled error during request %s %s after %.2fms",
             request.method,
@@ -438,6 +458,83 @@ async def api_search(request: Request, body: SearchRequest):
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error performing search for query '%s'", body.query)
         raise HTTPException(status_code=500, detail="Internal server error during search")
+
+
+# Monitoring endpoints
+@app.get("/api/monitoring/pipeline-status")
+@limiter.limit("60/minute")
+async def get_pipeline_status(request: Request):
+    """Get pipeline status (last run times, success/failure)."""
+    import os
+    from datetime import datetime
+    
+    status = {
+        "ingestion": {
+            "has_artifacts": os.path.exists("data/raw/articles.json"),
+            "artifact_size": os.path.getsize("data/raw/articles.json") if os.path.exists("data/raw/articles.json") else 0,
+        },
+        "preprocessing": {
+            "has_artifacts": os.path.exists("data/processed/cleaned_articles.parquet") and os.path.exists("data/features/embeddings.parquet"),
+        },
+        "clustering": {
+            "has_artifacts": os.path.exists("models/clustering/cluster_assignments.parquet"),
+        },
+    }
+    
+    # Try to get last modified times
+    for stage, info in status.items():
+        if stage == "ingestion" and info["has_artifacts"]:
+            mtime = os.path.getmtime("data/raw/articles.json")
+            info["last_modified"] = datetime.fromtimestamp(mtime).isoformat()
+        elif stage == "preprocessing" and info["has_artifacts"]:
+            mtime = max(
+                os.path.getmtime("data/processed/cleaned_articles.parquet"),
+                os.path.getmtime("data/features/embeddings.parquet"),
+            )
+            info["last_modified"] = datetime.fromtimestamp(mtime).isoformat()
+        elif stage == "clustering" and info["has_artifacts"]:
+            mtime = os.path.getmtime("models/clustering/cluster_assignments.parquet")
+            info["last_modified"] = datetime.fromtimestamp(mtime).isoformat()
+    
+    return status
+
+
+@app.get("/api/monitoring/metrics")
+@limiter.limit("60/minute")
+async def get_metrics(request: Request):
+    """Get API performance metrics."""
+    from src.monitoring.api_metrics import get_api_metrics_summary
+    
+    window_seconds = request.query_params.get("window_seconds")
+    window = float(window_seconds) if window_seconds else None
+    
+    summary = get_api_metrics_summary(window_seconds=window)
+    return summary
+
+
+@app.get("/api/monitoring/drift")
+@limiter.limit("60/minute")
+async def get_drift_scores(request: Request):
+    """Get latest drift detection scores."""
+    import json
+    import os
+    
+    report_path = "reports/drift_report.json"
+    if os.path.exists(report_path):
+        with open(report_path, "r") as f:
+            return json.load(f)
+    else:
+        raise HTTPException(status_code=404, detail="Drift report not found. Run clustering first.")
+
+
+@app.get("/api/monitoring/stability")
+@limiter.limit("60/minute")
+async def get_cluster_stability(request: Request):
+    """Get cluster stability metrics."""
+    from src.monitoring.cluster_stability import calculate_cluster_stability
+    
+    stability = calculate_cluster_stability()
+    return stability
 
 
 if __name__ == "__main__":

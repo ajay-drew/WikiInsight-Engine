@@ -28,9 +28,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Check if required data artifacts exist (for search engine)
+REM Check if required data artifacts exist
 if not exist "data\processed\cleaned_articles.parquet" (
-    echo [WARN] Search engine artifacts not found. Search endpoint will be unavailable.
+    echo [WARN] Preprocessing artifacts not found. Search endpoint will be unavailable.
+    echo [INFO] Run 'run_tools.cmd' or 'dvc repro' to generate required artifacts.
+    echo.
+)
+if not exist "models\clustering\cluster_assignments.parquet" (
+    echo [WARN] Clustering artifacts not found. Topic lookup endpoints will be unavailable.
     echo [INFO] Run 'run_tools.cmd' or 'dvc repro' to generate required artifacts.
     echo.
 )
@@ -81,9 +86,10 @@ echo API Docs:       http://127.0.0.1:%API_PORT%/docs
 echo Frontend:       http://localhost:%FRONTEND_PORT%
 echo.
 echo Features:
-echo   - Hybrid Search (semantic + keyword)
-echo   - Topic Clustering
-echo   - Cluster Exploration
+echo   - Hybrid Search (semantic + keyword with RRF)
+echo   - Topic Clustering (AgglomerativeClustering)
+echo   - Cluster Exploration & Lookup
+echo   - Monitoring Dashboard
 echo.
 echo Press any key to close this window...
 echo (Services will continue running in separate windows)

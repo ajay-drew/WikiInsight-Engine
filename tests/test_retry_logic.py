@@ -40,23 +40,33 @@ def test_wikipedia_client_retries_on_failure():
     mock_page.links.return_value = []
     mock_page.revisions.return_value = []
     
-    call_count = 0
+    call_count = [0]  # Use list to allow modification in nested function
     
-    def mock_getitem(key):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise Exception("Network error")
+    def mock_getitem(self, key):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call fails when accessing page.text()
+            mock_page_fail = MagicMock()
+            mock_page_fail.exists = True
+            mock_page_fail.name = "Test Article"
+            mock_page_fail.text.side_effect = Exception("Network error")
+            mock_page_fail.categories.return_value = []
+            mock_page_fail.links.return_value = []
+            mock_page_fail.revisions.return_value = []
+            return mock_page_fail
         return mock_page
     
-    client.site.pages.__getitem__ = mock_getitem
+    # Mock the pages object properly using side_effect
+    mock_pages = MagicMock()
+    mock_pages.__getitem__.side_effect = lambda key: mock_getitem(mock_pages, key)
+    client.site.pages = mock_pages
     
     # Should retry and eventually succeed
     with patch('src.ingestion.wikipedia_client._sleep_with_backoff'):
         result = client.get_article("Test Article", fetch_links=False, fetch_categories=False)
     assert result is not None
     assert result["title"] == "Test Article"
-    assert call_count == 2  # Failed once, then succeeded
+    assert call_count[0] == 2  # Failed once, then succeeded
 
 
 def test_max_links_limit():
@@ -75,8 +85,10 @@ def test_max_links_limit():
     many_links = [f"Link{i}" for i in range(100)]
     mock_page.links.return_value = many_links
     
-    client.site.pages = MagicMock()
-    client.site.pages.__getitem__ = lambda key: mock_page
+    # Mock the pages object properly using side_effect
+    mock_pages = MagicMock()
+    mock_pages.__getitem__.return_value = mock_page
+    client.site.pages = mock_pages
     
     result = client.get_article("Test Article", fetch_links=True, max_links=50)
     assert result is not None
@@ -97,18 +109,28 @@ async def test_async_client_retry():
     mock_page.links.return_value = []
     mock_page.revisions.return_value = []
     
-    call_count = 0
+    call_count = [0]  # Use list to allow modification in nested function
     
-    def mock_getitem(key):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise Exception("Network error")
+    def mock_getitem(self, key):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call fails when accessing page.text() via executor
+            mock_page_fail = MagicMock()
+            mock_page_fail.exists = True
+            mock_page_fail.name = "Test Article"
+            mock_page_fail.text.side_effect = Exception("Network error")
+            mock_page_fail.categories.return_value = []
+            mock_page_fail.links.return_value = []
+            mock_page_fail.revisions.return_value = []
+            return mock_page_fail
         return mock_page
     
-    client.site.pages.__getitem__ = mock_getitem
+    # Mock the pages object properly using side_effect
+    mock_pages = MagicMock()
+    mock_pages.__getitem__.side_effect = lambda key: mock_getitem(mock_pages, key)
+    client.site.pages = mock_pages
     
-    with patch('asyncio.sleep'):  # Mock sleep to speed up test
+    with patch('asyncio.sleep'), patch('src.ingestion.wikipedia_client_async._async_sleep_with_backoff'):
         result = await client.get_article("Test Article", fetch_links=False, fetch_categories=False)
     assert result is not None
     assert result["title"] == "Test Article"

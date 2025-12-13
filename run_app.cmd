@@ -26,9 +26,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Check if required data artifacts exist (for search engine)
+REM Check if required data artifacts exist
 if not exist "data\processed\cleaned_articles.parquet" (
-    echo [WARN] Search engine artifacts not found. Search endpoint will be unavailable.
+    echo [WARN] Preprocessing artifacts not found. Search endpoint will be unavailable.
+    echo [INFO] Run 'run_tools.cmd' or 'dvc repro' to generate required artifacts.
+    echo.
+)
+if not exist "models\clustering\cluster_assignments.parquet" (
+    echo [WARN] Clustering artifacts not found. Topic lookup endpoints will be unavailable.
     echo [INFO] Run 'run_tools.cmd' or 'dvc repro' to generate required artifacts.
     echo.
 )
@@ -57,7 +62,8 @@ echo [1/2] Starting FastAPI backend...
 echo [INFO] Using --reload for development. If you encounter socket errors on Windows,
 echo        try 'run_app_production.cmd' instead (runs without auto-reload).
 REM Use explicit reload-dir to limit file watching scope (helps on Windows)
-start "WikiInsight API" cmd /k "cd /d %~dp0 && if exist venv\Scripts\activate.bat (call venv\Scripts\activate.bat) else if exist .venv\Scripts\activate.bat (call .venv\Scripts\activate.bat) && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload --reload-dir src --workers 1"
+REM Note: Using --workers 1 for development to avoid Windows socket issues
+start "WikiInsight API" cmd /k "cd /d %~dp0 && if exist venv\Scripts\activate.bat (call venv\Scripts\activate.bat) else if exist .venv\Scripts\activate.bat (call .venv\Scripts\activate.bat) && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload --reload-dir src --reload-dir config.yaml --workers 1"
 
 REM Wait a moment for API to start
 timeout /t 2 /nobreak >nul
@@ -83,9 +89,10 @@ echo API Docs:       http://127.0.0.1:%API_PORT%/docs
 echo Frontend:       http://localhost:%FRONTEND_PORT%
 echo.
 echo Features:
-echo   - Hybrid Search (semantic + keyword)
-echo   - Topic Clustering
-echo   - Cluster Exploration
+echo   - Hybrid Search (semantic + keyword with RRF)
+echo   - Topic Clustering (AgglomerativeClustering)
+echo   - Cluster Exploration & Lookup
+echo   - Monitoring Dashboard
 echo.
 echo Press any key to close this window...
 echo (Services will continue running in separate windows)

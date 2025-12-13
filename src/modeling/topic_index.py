@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 import joblib
 import numpy as np
 import pandas as pd
+import sys  # Needed for pickle workaround
 
 from .cluster_topics import (
     CLUSTER_ASSIGNMENTS_PATH,
@@ -25,6 +26,7 @@ from .cluster_topics import (
     EMBEDDINGS_PATH,
     KMEANS_MODEL_PATH,
     NN_INDEX_PATH,
+    AgglomerativeWrapper,  # Import wrapper class so joblib can unpickle saved models
 )
 
 logger = logging.getLogger(__name__)
@@ -94,6 +96,12 @@ class TopicIndex:
 
         assignments_df = pd.read_parquet(CLUSTER_ASSIGNMENTS_PATH)
         summaries_df = pd.read_parquet(CLUSTERS_SUMMARY_PATH)
+
+        # Workaround: Register AgglomerativeWrapper in __main__ module before loading
+        # This handles cases where the model was saved when cluster_topics.py was run as __main__
+        # The pickle file references __main__.AgglomerativeWrapper, so we need to register it there
+        if "__main__" in sys.modules:
+            sys.modules["__main__"].AgglomerativeWrapper = AgglomerativeWrapper
 
         cluster_model = joblib.load(KMEANS_MODEL_PATH)
         nn_index = joblib.load(NN_INDEX_PATH)

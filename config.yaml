@@ -37,9 +37,6 @@ preprocessing:
   embeddings:
     model: "all-MiniLM-L6-v2"
     batch_size: 32
-  
-  graph:
-    similarity_threshold: 0.7
 
 # Search / BM25 configuration
 search:
@@ -69,6 +66,34 @@ mlops:
   mlflow:
     tracking_uri: "sqlite:///mlflow.db"
     experiment_name: "wikiinsight"
+
+# Prefect Orchestration
+prefect:
+  server_url: "http://localhost:4200"  # Optional Prefect server
+  retries:
+    ingestion: 3
+    embeddings: 2
+    clustering: 2
+  timeouts:
+    ingestion: 3600  # 1 hour in seconds
+    embeddings: 1800  # 30 min in seconds
+    clustering: 1800  # 30 min in seconds
+  notifications:
+    enabled: false
+    webhook_url: ""  # Optional webhook for failures
+
+# Monitoring
+monitoring:
+  drift:
+    enabled: true
+    threshold: 0.3  # KS test p-value threshold
+    check_after_clustering: true
+  stability:
+    enabled: true
+    ari_threshold: 0.7  # Minimum ARI for stability
+  alerts:
+    enabled: true
+    webhook_url: ""
 
 # Logging
 logging:

@@ -8,8 +8,6 @@ preprocessing:
   embeddings:
     model: "all-MiniLM-L6-v2"
     batch_size: 32
-  graph:
-    similarity_threshold: 0.7
 
 models:
   clustering:

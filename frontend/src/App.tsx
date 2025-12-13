@@ -4,9 +4,10 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TopicLookupPage } from "./pages/TopicLookup";
 import { ClustersOverviewPage } from "./pages/ClustersOverview";
 import { SearchPage } from "./pages/Search";
+import { MonitoringPage } from "./pages/Monitoring";
 
 export default function App() {
-  const [page, setPage] = useState<"lookup" | "clusters" | "search">("search");
+  const [page, setPage] = useState<"lookup" | "clusters" | "search" | "monitoring">("search");
 
   return (
     <ErrorBoundary>
@@ -14,6 +15,7 @@ export default function App() {
         {page === "search" && <SearchPage />}
         {page === "lookup" && <TopicLookupPage />}
         {page === "clusters" && <ClustersOverviewPage />}
+        {page === "monitoring" && <MonitoringPage />}
       </Layout>
     </ErrorBoundary>
   );

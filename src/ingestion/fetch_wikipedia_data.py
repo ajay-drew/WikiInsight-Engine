@@ -220,9 +220,13 @@ async def main_async(
     sample: Optional[int],
     resume: bool,
 ) -> None:
-    """Async main function."""
+    """Async main function with MLflow logging."""
+    from time import perf_counter
+    
     setup_logging()
     logger.info("Starting async Wikipedia ingestion")
+    
+    start_time = perf_counter()
 
     if sample is not None:
         max_articles = min(max_articles, sample)
@@ -253,7 +257,63 @@ async def main_async(
         checkpoint_path=RAW_DATA_PATH,
     )
     save_articles(articles, RAW_DATA_PATH)
-    logger.info("Ingestion complete")
+    
+    duration = perf_counter() - start_time
+    logger.info("Ingestion complete in %.2f seconds", duration)
+    
+    # Calculate metrics for MLflow
+    total_articles = len(articles)
+    total_words = sum(len(article.get("text", "").split()) for article in articles)
+    avg_words = total_words / total_articles if total_articles > 0 else 0
+    total_links = sum(len(article.get("links", [])) for article in articles)
+    avg_links = total_links / total_articles if total_articles > 0 else 0
+    
+    # Count stubs (articles with < 200 words)
+    stub_count = sum(1 for article in articles if len(article.get("text", "").split()) < 200)
+    
+    # Optional MLflow logging
+    try:
+        import mlflow
+        import yaml
+        
+        config_path = "config.yaml"
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+        else:
+            config = {}
+        
+        ml_cfg = config.get("mlops", {}).get("mlflow", {})
+        tracking_uri = ml_cfg.get("tracking_uri")
+        experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
+        
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
+        if experiment_name:
+            mlflow.set_experiment(experiment_name)
+        
+        with mlflow.start_run(run_name="ingestion"):
+            # Log parameters
+            mlflow.log_param("max_articles", max_articles)
+            mlflow.log_param("per_query_limit", per_query_limit)
+            mlflow.log_param("batch_size", batch_size)
+            mlflow.log_param("max_workers", max_workers)
+            mlflow.log_param("sample", sample is not None)
+            mlflow.log_param("resume", resume)
+            
+            # Log metrics
+            mlflow.log_metric("articles_fetched", total_articles)
+            mlflow.log_metric("articles_filtered_stubs", stub_count)
+            mlflow.log_metric("avg_article_length_words", avg_words)
+            mlflow.log_metric("total_words", total_words)
+            mlflow.log_metric("total_links", total_links)
+            mlflow.log_metric("avg_links_per_article", avg_links)
+            mlflow.log_metric("fetch_duration_seconds", duration)
+            mlflow.log_metric("articles_per_second", total_articles / duration if duration > 0 else 0)
+            
+            logger.info("Logged ingestion metrics to MLflow")
+    except Exception as exc:
+        logger.warning("MLflow logging skipped or failed: %s", exc)
 
 
 def parse_args() -> argparse.Namespace:

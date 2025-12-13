@@ -146,23 +146,54 @@ def main() -> None:
         save_parquet(cleaned_df, CLEANED_ARTICLES_PATH)
         save_parquet(emb_df, EMBEDDINGS_PATH)
 
-        # Optional MLflow logging
+        # Enhanced MLflow logging
+        from time import perf_counter
+        from src.common.mlflow_utils import (
+            log_metrics_safely,
+            log_params_safely,
+            start_mlflow_run,
+        )
+        
+        emb_start_time = perf_counter()
+        
         try:
-            import mlflow
-
-            ml_cfg = config.get("mlops", {}).get("mlflow", {})
-            tracking_uri = ml_cfg.get("tracking_uri")
-            experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
-
-            if tracking_uri:
-                mlflow.set_tracking_uri(tracking_uri)
-            if experiment_name:
-                mlflow.set_experiment(experiment_name)
-
-            with mlflow.start_run(run_name="preprocess_articles"):
-                mlflow.log_param("embedding_model", model_name)
-                mlflow.log_param("embedding_batch_size", batch_size)
-                mlflow.log_metric("n_articles", len(cleaned_df))
+            # Calculate additional metrics
+            avg_text_length_before = sum(len(art.get("text", "")) for art in articles) / len(articles) if articles else 0
+            avg_text_length_after = cleaned_df["cleaned_text"].str.len().mean() if "cleaned_text" in cleaned_df.columns else 0
+            
+            # Estimate vocabulary size (unique words)
+            all_words = set()
+            for text in cleaned_df.get("cleaned_text", []):
+                if isinstance(text, str):
+                    all_words.update(text.lower().split())
+            vocab_size = len(all_words)
+            
+            embedding_duration = perf_counter() - emb_start_time
+            
+            with start_mlflow_run("preprocess_articles"):
+                # Log parameters
+                log_params_safely({
+                    "embedding_model": model_name,
+                    "embedding_batch_size": batch_size,
+                })
+                
+                # Log metrics
+                log_metrics_safely({
+                    "n_articles": len(cleaned_df),
+                    "avg_text_length_before": avg_text_length_before,
+                    "avg_text_length_after": avg_text_length_after,
+                    "vocabulary_size": vocab_size,
+                    "embedding_duration_seconds": embedding_duration,
+                    "articles_per_second": len(cleaned_df) / embedding_duration if embedding_duration > 0 else 0,
+                })
+                
+                # Log embedding dimension if available
+                if "embedding" in emb_df.columns and len(emb_df) > 0:
+                    sample_emb = emb_df["embedding"].iloc[0]
+                    if isinstance(sample_emb, list):
+                        log_metrics_safely({"embedding_dimension": len(sample_emb)})
+                
+                logger.info("Logged preprocessing metrics to MLflow")
         except Exception as exc:  # noqa: BLE001
             logger.warning("MLflow logging skipped or failed: %s", exc)
 
