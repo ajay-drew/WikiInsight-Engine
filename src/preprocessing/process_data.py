@@ -107,6 +107,7 @@ def generate_embeddings(
         batch_size,
     )
     generator = EmbeddingGenerator(model_name=model_name)
+    # encode_batch has show_progress_bar=True, so it will show progress
     embeddings = generator.encode_batch(texts, batch_size=batch_size)
 
     if isinstance(embeddings, list):

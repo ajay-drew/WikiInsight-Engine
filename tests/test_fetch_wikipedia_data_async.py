@@ -14,7 +14,16 @@ from src.ingestion.fetch_wikipedia_data import (  # noqa: E402
     save_articles,
     main,
 )
-from src.ingestion.constants import SEED_QUERIES, RAW_DATA_PATH  # noqa: E402
+# Constants inlined (previously from src.ingestion.constants)
+SEED_QUERIES = [
+    "Machine learning",
+    "Artificial intelligence",
+    "Data science",
+    "Physics",
+    "Biology",
+    "History",
+]
+RAW_DATA_PATH = "data/raw/articles.json"
 
 
 @pytest.mark.asyncio

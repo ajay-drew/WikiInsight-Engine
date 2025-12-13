@@ -35,6 +35,14 @@ REM 1) Run DVC pipeline
 REM ---------------------
 echo [1/2] Running DVC Pipeline
 echo ----------------------------------------
+echo.
+echo NOTE: All pipeline stages use tqdm progress bars for visual feedback.
+echo       You will see progress indicators for:
+echo       - Article fetching (fetch_data stage)
+echo       - Text cleaning (preprocess stage)
+echo       - Embedding generation (preprocess stage)
+echo       - Cluster summarization (cluster_topics stage)
+echo.
 
 REM Check if DVC is installed
 dvc --version >nul 2>&1
@@ -50,8 +58,11 @@ echo Running: dvc repro
 echo.
 echo This will execute the following pipeline stages:
 echo   1. fetch_data: Fetch Wikipedia articles via mwclient API
+echo      - Progress: tqdm progress bar shows articles fetched
 echo   2. preprocess: Clean text, normalize with NLTK, generate embeddings
+echo      - Progress: tqdm shows article cleaning, embedding generation shows progress
 echo   3. cluster_topics: Cluster articles, extract keywords, build k-NN index
+echo      - Progress: tqdm shows cluster summarization progress
 echo.
 echo Generated artifacts:
 echo   - data/raw/articles.json (raw Wikipedia articles)
@@ -64,6 +75,9 @@ echo These artifacts are required for:
 echo   - Topic clustering and lookup endpoints
 echo   - Hybrid search engine (semantic + keyword search with RRF)
 echo   - Cluster exploration and monitoring
+echo.
+echo [INFO] All pipeline stages use tqdm progress bars for visual feedback.
+echo [INFO] Watch for progress indicators in the output below.
 echo.
 
 dvc repro

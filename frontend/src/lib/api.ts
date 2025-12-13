@@ -54,6 +54,12 @@ export type SearchResult = {
   title: string;
   score: number;
   rank: number;
+  wikipedia_url: string;
+  wikidata_qid?: string;
+  wikidata_url?: string;
+  cluster_id?: number;
+  categories: string[];
+  link_count: number;
 };
 
 export type SearchResponse = {
@@ -161,6 +167,71 @@ export async function fetchClusterStability(): Promise<StabilityMetrics> {
     throw new Error(`Failed to load cluster stability (${resp.status}): ${text || resp.statusText}`);
   }
   return (await resp.json()) as StabilityMetrics;
+}
+
+// Graph API types and functions
+export type GraphNode = {
+  id: string;
+  label: string;
+  cluster_id: number;
+  x?: number;
+  y?: number;
+};
+
+export type GraphEdge = {
+  source: string;
+  target: string;
+  layer: 2 | 3;
+  weight: number;
+  type: "cluster" | "semantic";
+};
+
+export type GraphVisualization = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+};
+
+export type GraphNeighbor = {
+  title: string;
+  layer: number;
+  type: string;
+  weight: number;
+};
+
+export async function fetchGraphNeighbors(articleTitle: string): Promise<{ article_title: string; neighbors: GraphNeighbor[] }> {
+  const resp = await fetch(`${API_BASE}/graph/neighbors/${encodeURIComponent(articleTitle)}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to load graph neighbors (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as { article_title: string; neighbors: GraphNeighbor[] };
+}
+
+export async function fetchGraphPath(from: string, to: string): Promise<{ from_title: string; to_title: string; path: string[] | null; found: boolean }> {
+  const resp = await fetch(`${API_BASE}/graph/path/${encodeURIComponent(from)}/${encodeURIComponent(to)}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to find graph path (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as { from_title: string; to_title: string; path: string[] | null; found: boolean };
+}
+
+export async function fetchGraphVisualization(clusterId: number): Promise<GraphVisualization> {
+  const resp = await fetch(`${API_BASE}/graph/visualization/${clusterId}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to load graph visualization (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as GraphVisualization;
+}
+
+export async function fetchArticleGraph(articleTitle: string): Promise<GraphVisualization> {
+  const resp = await fetch(`${API_BASE}/graph/article/${encodeURIComponent(articleTitle)}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to load article graph (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as GraphVisualization;
 }
 
 

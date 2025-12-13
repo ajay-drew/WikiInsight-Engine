@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { searchArticles, SearchResult } from "../lib/api";
+import { SearchResultCard } from "../components/SearchResultCard";
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
@@ -91,31 +92,9 @@ export function SearchPage() {
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-3">
               {results.map((result, idx) => (
-                <div
-                  key={`${result.title}-${idx}`}
-                  className="border border-slate-800 rounded-lg p-4 bg-slate-900/70 hover:bg-slate-900 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <h3 className="font-medium text-slate-100 mb-1">{result.title}</h3>
-                      <div className="flex items-center gap-4 text-xs text-slate-400 mt-2">
-                        <span>
-                          Score: <span className="font-mono text-sky-400">{result.score.toFixed(4)}</span>
-                        </span>
-                        <span>
-                          Rank: <span className="font-mono">{result.rank + 1}</span>
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex-shrink-0">
-                      <span className="px-2 py-1 rounded bg-slate-800 text-xs text-slate-300">
-                        #{idx + 1}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+                <SearchResultCard key={`${result.title}-${idx}`} result={result} index={idx} />
               ))}
             </div>
           )}

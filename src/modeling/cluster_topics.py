@@ -133,13 +133,48 @@ _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z\-']+")
 
 try:  # spaCy is optional; we fall back to regex tokenization if unavailable
     import spacy
+    import subprocess
+    import sys
 
     try:
         _NLP = spacy.load("en_core_web_sm")
-    except Exception:  # noqa: BLE001
+    except OSError:
+        # Model not found, try to download it automatically
+        logger.info("spaCy model 'en_core_web_sm' not found. Attempting to download...")
+        
+        # Try method 1: spacy download command
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "spacy", "download", "en_core_web_sm"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            _NLP = spacy.load("en_core_web_sm")
+            logger.info("Successfully downloaded and loaded spaCy model 'en_core_web_sm'")
+        except Exception:  # noqa: BLE001
+            # Try method 2: pip install directly (fallback)
+            try:
+                logger.info("spacy download failed, trying pip install...")
+                subprocess.check_call(
+                    [sys.executable, "-m", "pip", "install", "en_core_web_sm"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                _NLP = spacy.load("en_core_web_sm")
+                logger.info("Successfully installed and loaded spaCy model 'en_core_web_sm' via pip")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to download spaCy model 'en_core_web_sm': %s. "
+                    "Falling back to simple regex tokenization for keywords. "
+                    "You can install it manually with: pip install en_core_web_sm",
+                    exc,
+                )
+                _NLP = None
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "spaCy model 'en_core_web_sm' not available; "
-            "falling back to simple regex tokenization for keywords.",
+            "spaCy model 'en_core_web_sm' not available: %s. "
+            "Falling back to simple regex tokenization for keywords.",
+            exc,
         )
         _NLP = None
 except Exception:  # noqa: BLE001
@@ -294,9 +329,10 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict):
 def build_nn_index(embeddings: np.ndarray, cfg: Dict) -> NearestNeighbors:
     n_neighbors = int(cfg.get("n_neighbors", 10))
     algorithm = cfg.get("algorithm", "auto")
-    logger.info("Building NearestNeighbors index (n_neighbors=%d, algorithm=%s)", n_neighbors, algorithm)
+    logger.info("Building NearestNeighbors index (n_neighbors=%d, algorithm=%s)...", n_neighbors, algorithm)
     nn = NearestNeighbors(n_neighbors=n_neighbors, algorithm=algorithm)
     nn.fit(embeddings)
+    logger.info("NearestNeighbors index built successfully")
     return nn
 
 
@@ -342,6 +378,12 @@ def compute_cluster_summaries(
     cluster_token_sets: Dict[int, Set[str]] = {}
     cluster_total_tokens: Dict[int, int] = {}
 
+    # First pass: tokenize all articles and build per-cluster counters
+    # This is the slowest step, so we show progress
+    logger.info("Tokenizing articles and building cluster token counters...")
+    total_articles = sum(len(indices) for indices in cluster_to_indices.values())
+    article_progress = tqdm(total=total_articles, desc="Tokenizing articles", unit="article")
+    
     for cluster_id, indices in cluster_to_indices.items():
         token_counter: Counter = Counter()
         token_set: Set[str] = set()
@@ -353,9 +395,12 @@ def compute_cluster_summaries(
                 token_counter[tok] += 1
                 token_set.add(tok)
                 total_tokens += 1
+            article_progress.update(1)
         cluster_token_counters[cluster_id] = token_counter
         cluster_token_sets[cluster_id] = token_set
         cluster_total_tokens[cluster_id] = total_tokens
+    
+    article_progress.close()
 
     # Compute class frequency (CF) across clusters: how many clusters contain each term
     cf_counter: Counter = Counter()
@@ -466,6 +511,7 @@ def main() -> None:
         assignments_df.to_parquet(CLUSTER_ASSIGNMENTS_PATH, index=False)
 
         centers = model.cluster_centers_
+        logger.info("Computing cluster summaries (keywords and representative articles)...")
         summaries_df = compute_cluster_summaries(
             titles=titles,
             cleaned_texts=cleaned_texts,
@@ -473,6 +519,7 @@ def main() -> None:
             labels=labels,
             centers=centers,
         )
+        logger.info("Cluster summaries computed successfully")
         summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
 
         # Calculate cluster size distribution

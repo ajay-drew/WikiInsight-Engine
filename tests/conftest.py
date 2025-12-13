@@ -24,19 +24,6 @@ def mwclient_available():
     return MWCLIENT_AVAILABLE
 
 
-@pytest.fixture
-def wikipedia_client():
-    """
-    Fixture providing a WikipediaClient instance for tests.
-    
-    This fixture is available to all tests that need a Wikipedia client.
-    Tests will be skipped if mwclient is not installed.
-    """
-    if not MWCLIENT_AVAILABLE:
-        pytest.skip("mwclient is not installed")
-    
-    from src.ingestion.wikipedia_client import WikipediaClient
-    return WikipediaClient(site="en.wikipedia.org")
 
 
 @pytest.fixture

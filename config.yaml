@@ -67,21 +67,6 @@ mlops:
     tracking_uri: "sqlite:///mlflow.db"
     experiment_name: "wikiinsight"
 
-# Prefect Orchestration
-prefect:
-  server_url: "http://localhost:4200"  # Optional Prefect server
-  retries:
-    ingestion: 3
-    embeddings: 2
-    clustering: 2
-  timeouts:
-    ingestion: 3600  # 1 hour in seconds
-    embeddings: 1800  # 30 min in seconds
-    clustering: 1800  # 30 min in seconds
-  notifications:
-    enabled: false
-    webhook_url: ""  # Optional webhook for failures
-
 # Monitoring
 monitoring:
   drift:
@@ -91,13 +76,24 @@ monitoring:
   stability:
     enabled: true
     ari_threshold: 0.7  # Minimum ARI for stability
-  alerts:
-    enabled: true
-    webhook_url: ""
+
+# Graph configuration
+graph:
+  semantic_similarity_threshold: 0.7  # Minimum cosine similarity for semantic edges
+  max_nodes_per_visualization: 100  # Limit for graph display
+  enable_cluster_edges: true  # Whether to include cluster relationship edges
+
+# Wikidata configuration
+wikidata:
+  enabled: true  # Enable/disable Wikidata linking
+  cache_path: "data/entities/wikidata_mappings.parquet"
+  request_delay: 0.3  # Delay in seconds between API requests to respect rate limits
+  # Note: Wikidata API requires User-Agent header and has rate limits (~200 req/min)
+  # Requests without proper User-Agent may be blocked with 403 Forbidden
 
 # Logging
 logging:
   level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  format: "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
   file: "logs/wikiinsight.log"
 

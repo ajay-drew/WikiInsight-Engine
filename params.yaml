@@ -18,4 +18,9 @@ models:
     n_neighbors: 10
     algorithm: "auto"
 
+graph:
+  semantic_similarity_threshold: 0.7
+  max_nodes_per_visualization: 100
+  enable_cluster_edges: true
+
 

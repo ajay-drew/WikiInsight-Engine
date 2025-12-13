@@ -1,75 +1,84 @@
 # WikiInsight Engine
 
-AI-driven system for unsupervised hierarchical topic clustering of Wikipedia articles using **AgglomerativeClustering** and **c-TF-IDF** keyword extraction. Features hybrid search combining semantic (vector) and keyword (BM25) search with Reciprocal Rank Fusion.
+AI-powered topic clustering and knowledge graph explorer for Wikipedia articles. Automatically groups articles into topic clusters using unsupervised learning and provides interactive visualization of relationships between articles.
 
-## ✅ Features
+## What is This?
 
-- **Wikipedia Ingestion**: Fetch articles via `mwclient` with async support
-- **Text Preprocessing**: Clean text, generate embeddings with `sentence-transformers`
-- **Topic Clustering**: AgglomerativeClustering with c-TF-IDF for distinctive topic words
-- **Hybrid Search**: Semantic + keyword search with RRF fusion
-- **REST API**: FastAPI with search, topic lookup, and cluster endpoints
-- **React Frontend**: Modern UI with Vite + Tailwind CSS
-- **MLOps**: DVC, MLflow, Prefect for pipeline orchestration
-- **Tests**: Comprehensive pytest + Vitest test suite
+WikiInsight Engine is an end-to-end ML system that:
+- **Ingests** Wikipedia articles via the MediaWiki API
+- **Clusters** articles into topics using AgglomerativeClustering and semantic embeddings
+- **Extracts** distinctive keywords per cluster using c-TF-IDF
+- **Builds** a multi-layer knowledge graph (cluster relationships + semantic similarity)
+- **Searches** articles using hybrid semantic + keyword search (BM25 + embeddings)
+- **Visualizes** clusters and relationships in an interactive React dashboard
 
-## 🛠️ Quick Start
+## Why This Project?
+
+- **Discover Hidden Connections**: Find related articles across different Wikipedia categories
+- **Topic Exploration**: Understand how articles group into natural topics without manual labeling
+- **Knowledge Graph**: Visualize relationships between articles through cluster and semantic connections
+- **Production-Ready ML**: Full MLOps pipeline with DVC and MLflow experiment tracking
+- **Modern Stack**: FastAPI backend + React frontend with real-time graph visualization
+
+## How to Run
+
+### Prerequisites
+- Python 3.10+ with virtual environment
+- Node.js 18+ and npm
+- Git
+
+### Setup
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-python -m spacy download en_core_web_sm
-# (Optional but recommended for best BM25 + preprocessing quality)
-python -m nltk.downloader punkt stopwords wordnet
+# 1. Clone and setup Python environment
+git clone <repo-url>
+cd WikiInsight-Engine
+python -m venv venv
+venv\Scripts\activate  # Windows
+# OR: source venv/bin/activate  # Linux/Mac
 
-# Run data pipeline
-dvc repro  # OR: run_tools.cmd
+# 2. Install Python dependencies
+pip install -e .
 
-# Start services
-run_app.cmd  # Development (with reload)
-# OR: run_app_production.cmd  # Production (no reload, Windows-friendly)
+# 3. Install frontend dependencies
+cd frontend
+npm install
+cd ..
+
+# 4. Download NLP resources (auto-downloads on first use, but recommended)
+python scripts/setup_nlp_resources.py
 ```
 
-## 📁 Structure
+### Running the System
 
+```bash
+# Option 1: Run data pipeline first, then start app
+run_tools.cmd    # Runs DVC pipeline + starts MLflow UI
+run_app.cmd      # Starts FastAPI backend + React frontend
+
+# Option 2: Manual pipeline execution
+dvc repro        # Run full data pipeline (fetch → preprocess → cluster → graph)
+run_app.cmd      # Start services
 ```
-src/
-├── ingestion/      # Wikipedia API client
-├── preprocessing/  # Text cleaning, embeddings
-├── modeling/       # Clustering + topic index
-├── serving/        # Hybrid search engine
-└── api/            # FastAPI backend
-frontend/           # React + Vite + Tailwind
-tests/              # Test suite
-```
 
-## 🔧 Tech Stack
+### Access Points
+- **Frontend**: http://localhost:5173 (React dashboard)
+- **API**: http://localhost:8000 (FastAPI, docs at `/docs`)
+- **MLflow**: http://localhost:5000 (experiment tracking)
 
-**ML**: `scikit-learn` (AgglomerativeClustering), `sentence-transformers`, `spaCy`, `nltk`  
-**Search**: `rank-bm25`, `scikit-learn` (NearestNeighbors), RRF with multi-field BM25 (title + body)  
-**Backend**: `FastAPI`, `pandas`, `numpy`  
-**Frontend**: `React`, `Vite`, `Tailwind CSS`  
-**MLOps**: `DVC`, `MLflow`, `Prefect`
+### First Run
+1. Run `run_tools.cmd` to fetch Wikipedia data and build clusters (takes 5-15 minutes)
+2. Run `run_app.cmd` to start the web interface
+3. Explore clusters in the "Clusters Overview" page or search articles
 
-### Ingestion & pipeline UX
+## Tech Stack
 
-- **Async ingestion** (`src/ingestion/fetch_wikipedia_data.py`):
-  - Concurrent fetching via `AsyncWikipediaClient` with retry + exponential backoff.
-  - CLI flags: `--max-articles`, `--per-query-limit`, `--batch-size`, `--max-workers`, `--sample`, `--resume`.
-  - Filters out stub articles by length (< 200 words) and limits per-article links to 50.
-  - Uses `tqdm` progress bars and periodic checkpointing to `data/raw/articles.json` so long runs can resume.
-- **Preprocessing** (`src/preprocessing/process_data.py`):
-  - Cleans text and then applies NLTK-based normalization (lowercasing, stopwords, lemmatization/stemming) before embedding.
-  - Shows progress for article cleaning and logs expected durations for embedding generation.
-- **Clustering** (`src/modeling/cluster_topics.py`):
-  - Logs progress while summarizing clusters and surfaces clear error messages if inputs are missing or misconfigured.
+**ML**: scikit-learn (AgglomerativeClustering), sentence-transformers, spaCy, NLTK  
+**Search**: BM25 + semantic embeddings with Reciprocal Rank Fusion  
+**Backend**: FastAPI, pandas, NetworkX (knowledge graph)  
+**Frontend**: React, Vite, Tailwind CSS, React Flow (graph visualization)  
+**MLOps**: DVC (data versioning), MLflow (experiment tracking)
 
-## 📚 URLs
-
-- API: `http://localhost:8000` (docs: `/docs`)
-- Frontend: `http://localhost:5173`
-- MLflow: `http://localhost:5000` (after `mlflow ui`)
-
-## 📄 License
+## License
 
 MIT License

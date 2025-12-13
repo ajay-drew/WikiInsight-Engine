@@ -9,9 +9,10 @@ Exposes endpoints for:
 """
 
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,18 +25,31 @@ from src.common.logging_utils import setup_logging
 from src.modeling.topic_index import TopicIndex
 from src.serving.search_engine import HybridSearchEngine
 from src.preprocessing.embeddings import EmbeddingGenerator
+from src.graph.graph_service import GraphService
+from src.research.wikidata_linker import WikidataLinker
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 _topic_index: Optional[TopicIndex] = None
 _search_engine: Optional[HybridSearchEngine] = None
+_graph_service: Optional[GraphService] = None
+_wikidata_linker: Optional[WikidataLinker] = None
+_cleaned_articles_df = None
+
+
+def _get_wikipedia_url(title: str) -> str:
+    """Generate Wikipedia URL for an article title."""
+    # Replace spaces with underscores and URL encode
+    encoded = title.replace(" ", "_")
+    encoded = urllib.parse.quote(encoded, safe="_")
+    return f"https://en.wikipedia.org/wiki/{encoded}"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
-    global _topic_index, _search_engine
+    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
     # Startup
     try:
         _topic_index = TopicIndex.load_default()
@@ -71,6 +85,7 @@ async def lifespan(app: FastAPI):
         if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
             # Load articles
             cleaned_df = pd.read_parquet(CLEANED_ARTICLES_PATH)
+            _cleaned_articles_df = cleaned_df  # Store for metadata lookup
             articles = [
                 {
                     "title": row["title"],
@@ -111,14 +126,47 @@ async def lifespan(app: FastAPI):
                 "  dvc repro"
             )
             _search_engine = None
+            _cleaned_articles_df = None
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to load HybridSearchEngine: %s", exc)
         _search_engine = None
+        _cleaned_articles_df = None
+
+    # Load graph service
+    try:
+        _graph_service = GraphService()
+        logger.info("Graph service loaded successfully")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Graph service not available: %s", exc)
+        _graph_service = None
+
+    # Load Wikidata linker
+    try:
+        import yaml
+        config = yaml.safe_load(open("config.yaml", "r"))
+        wikidata_cfg = config.get("wikidata", {})
+        enabled = wikidata_cfg.get("enabled", True)
+        cache_path = wikidata_cfg.get("cache_path", "data/entities/wikidata_mappings.parquet")
+        request_delay = wikidata_cfg.get("request_delay", 0.3)
+        _wikidata_linker = WikidataLinker(
+            cache_path=cache_path,
+            enabled=enabled,
+            request_delay=request_delay,
+        )
+        logger.info("Wikidata linker initialized")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Wikidata linker not available: %s", exc)
+        _wikidata_linker = None
 
     yield
     # Shutdown (if needed)
+    if _wikidata_linker:
+        _wikidata_linker.finalize()
     _topic_index = None
     _search_engine = None
+    _graph_service = None
+    _wikidata_linker = None
+    _cleaned_articles_df = None
 
 
 app = FastAPI(
@@ -183,6 +231,12 @@ class SearchResultResponse(BaseModel):
     title: str
     score: float
     rank: int
+    wikipedia_url: str
+    wikidata_qid: Optional[str] = None
+    wikidata_url: Optional[str] = None
+    cluster_id: Optional[int] = None
+    categories: List[str] = []
+    link_count: int = 0
 
 
 class SearchResponse(BaseModel):
@@ -408,6 +462,130 @@ async def api_cluster_detail(request: Request, cluster_id: int):
     return await cluster_detail(request, cluster_id)
 
 
+# Graph API endpoints
+
+class GraphNeighborsResponse(BaseModel):
+    """Response model for graph neighbors."""
+
+    article_title: str
+    neighbors: List[Dict]
+
+
+class GraphPathResponse(BaseModel):
+    """Response model for graph path."""
+
+    from_title: str
+    to_title: str
+    path: Optional[List[str]]
+    found: bool
+
+
+class GraphVisualizationResponse(BaseModel):
+    """Response model for graph visualization."""
+
+    nodes: List[Dict]
+    edges: List[Dict]
+
+
+@app.get("/api/graph/neighbors/{article_title}")
+@limiter.limit("100/minute")
+async def get_graph_neighbors(request: Request, article_title: str):
+    """Get graph neighbors for an article."""
+    if _graph_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Graph service is not available. Run graph construction pipeline first.",
+        )
+
+    try:
+        neighbors = _graph_service.get_neighbors(article_title)
+        return {"article_title": article_title, "neighbors": neighbors}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error getting graph neighbors for '%s'", article_title)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/graph/path/{from_title}/{to_title}")
+@limiter.limit("100/minute")
+async def get_graph_path(request: Request, from_title: str, to_title: str):
+    """Find shortest path between two articles."""
+    if _graph_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Graph service is not available. Run graph construction pipeline first.",
+        )
+
+    try:
+        path = _graph_service.find_path(from_title, to_title)
+        return {
+            "from_title": from_title,
+            "to_title": to_title,
+            "path": path,
+            "found": path is not None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error finding path from '%s' to '%s'", from_title, to_title)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/graph/visualization/{cluster_id}")
+@limiter.limit("60/minute")
+async def get_graph_visualization(request: Request, cluster_id: int):
+    """Get graph data for cluster visualization."""
+    if _graph_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Graph service is not available. Run graph construction pipeline first.",
+        )
+
+    if _topic_index is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Topic index is not available. Run clustering pipeline first.",
+        )
+
+    try:
+        # Get cluster assignments
+        assignments_df = _topic_index.assignments_df
+        cluster_assignments = {
+            str(row["title"]).lower(): int(row["cluster_id"])
+            for _, row in assignments_df.iterrows()
+        }
+
+        # Get subgraph for cluster
+        nodes, edges = _graph_service.get_cluster_subgraph(
+            cluster_id, cluster_assignments
+        )
+
+        return {"nodes": nodes, "edges": edges}
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Cluster {cluster_id} not found.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error getting graph visualization for cluster %d", cluster_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/graph/article/{article_title}")
+@limiter.limit("100/minute")
+async def get_article_graph(request: Request, article_title: str):
+    """Get graph centered on a specific article."""
+    if _graph_service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Graph service is not available. Run graph construction pipeline first.",
+        )
+
+    try:
+        nodes, edges = _graph_service.get_article_graph(article_title)
+        return {"nodes": nodes, "edges": edges}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error getting article graph for '%s'", article_title)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/api/search", response_model=SearchResponse)
 @limiter.limit("100/minute")
 async def api_search(request: Request, body: SearchRequest):
@@ -419,7 +597,7 @@ async def api_search(request: Request, body: SearchRequest):
         body: Search request with query and optional top_k
         
     Returns:
-        Search results with titles, scores, and ranks
+        Search results with titles, scores, ranks, and metadata
     """
     global _search_engine
     if _search_engine is None:
@@ -441,14 +619,62 @@ async def api_search(request: Request, body: SearchRequest):
 
         search_results = _search_engine.search(query, top_k=top_k)
         
-        results = [
-            SearchResultResponse(
-                title=result.title,
-                score=result.score,
-                rank=result.rank,
+        # Build results with metadata
+        results = []
+        for result in search_results:
+            # Get metadata from cleaned articles
+            wikipedia_url = _get_wikipedia_url(result.title)
+            wikidata_qid = None
+            wikidata_url = None
+            cluster_id = None
+            categories = []
+            link_count = 0
+
+            # Look up article metadata
+            if _cleaned_articles_df is not None:
+                article_row = _cleaned_articles_df[_cleaned_articles_df["title"].str.lower() == result.title.lower()]
+                if not article_row.empty:
+                    row = article_row.iloc[0]
+                    categories = row.get("categories", [])
+                    if isinstance(categories, list):
+                        categories = [str(c) for c in categories[:5]]  # Limit to 5
+                    links = row.get("links", [])
+                    if isinstance(links, list):
+                        link_count = len(links)
+
+            # Get cluster ID from topic index
+            if _topic_index is not None:
+                try:
+                    lookup_result = _topic_index.lookup(result.title)
+                    cluster_id = lookup_result.cluster_id
+                except (KeyError, Exception):  # noqa: BLE001
+                    pass
+
+            # Get Wikidata QID (with error handling - don't break search if Wikidata fails)
+            if _wikidata_linker is not None:
+                try:
+                    wikidata_qid = _wikidata_linker.link_entity(result.title)
+                    if wikidata_qid:
+                        wikidata_url = _wikidata_linker.get_wikidata_url(wikidata_qid)
+                except Exception as exc:  # noqa: BLE001
+                    # Log but don't fail - Wikidata linking is optional
+                    logger.debug("Wikidata linking failed for '%s': %s", result.title, exc)
+                    wikidata_qid = None
+                    wikidata_url = None
+
+            results.append(
+                SearchResultResponse(
+                    title=result.title,
+                    score=result.score,
+                    rank=result.rank,
+                    wikipedia_url=wikipedia_url,
+                    wikidata_qid=wikidata_qid,
+                    wikidata_url=wikidata_url,
+                    cluster_id=cluster_id,
+                    categories=categories,
+                    link_count=link_count,
+                )
             )
-            for result in search_results
-        ]
 
         return SearchResponse(
             query=query,

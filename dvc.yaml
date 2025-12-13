@@ -37,3 +37,15 @@ stages:
       - models.clustering
       - models.neighbors
 
+  build_graph:
+    cmd: python -m src.graph.build_graph
+    deps:
+      - data/processed/cleaned_articles.parquet
+      - models/clustering/cluster_assignments.parquet
+      - data/features/embeddings.parquet
+      - config.yaml
+    outs:
+      - data/graph/knowledge_graph.pkl
+    params:
+      - graph
+

@@ -15,8 +15,18 @@ from typing import Dict, Iterable, List, Optional
 from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
-from .constants import RAW_DATA_PATH, SEED_QUERIES
 from .wikipedia_client_async import AsyncWikipediaClient
+
+# Constants (previously from .constants)
+RAW_DATA_PATH = os.path.join("data", "raw", "articles.json")
+SEED_QUERIES: List[str] = [
+    "Machine learning",
+    "Artificial intelligence",
+    "Data science",
+    "Physics",
+    "Biology",
+    "History",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -70,27 +80,39 @@ async def fetch_corpus_async(
     existing_articles: Optional[List[Dict]] = None,
     checkpoint_path: Optional[str] = None,
     checkpoint_interval: int = 1000,
+    rate_limit: float = 200.0,
 ) -> List[Dict]:
     """
-    Fetch a corpus of Wikipedia articles concurrently (no sequential requests).
+    Fetch a corpus of Wikipedia articles concurrently with rate limiting.
 
     Args:
         max_articles: Maximum number of unique articles to fetch.
         per_query_limit: Maximum search results per seed query.
         batch_size: Number of articles to fetch concurrently in each batch.
         max_workers: Maximum number of concurrent workers.
+        rate_limit: Maximum requests per second (default: 200.0).
 
     Returns:
         List of normalized article dictionaries.
     """
+    # Optimize batch size and workers based on rate limit
+    # We want to maximize throughput while staying under the limit
+    # With 200 req/sec, we can process ~200 articles per second
+    # Optimal batch size should allow us to utilize the full rate limit
+    optimal_batch_size = min(batch_size, int(rate_limit * 0.5))  # Process batches at ~50% of rate limit for safety
+    optimal_workers = min(max_workers, int(rate_limit * 0.8))  # Use up to 80% of rate limit for concurrency
+    
     logger.info(
-        "Initializing async corpus fetch (max_articles=%d, per_query_limit=%d, batch_size=%d, max_workers=%d)",
+        "Initializing async corpus fetch (max_articles=%d, per_query_limit=%d, batch_size=%d->%d, max_workers=%d->%d, rate_limit=%.1f req/sec)",
         max_articles,
         per_query_limit,
         batch_size,
+        optimal_batch_size,
         max_workers,
+        optimal_workers,
+        rate_limit,
     )
-    client = AsyncWikipediaClient(max_workers=max_workers)
+    client = AsyncWikipediaClient(max_workers=optimal_workers, rate_limit=rate_limit)
     seen_titles: set[str] = set()
     articles: List[Dict] = []
 
@@ -151,10 +173,12 @@ async def fetch_corpus_async(
         checkpoint_path = checkpoint_path or RAW_DATA_PATH
 
         # Fetch articles in batches so we can report progress and checkpoint regularly.
+        # Use optimized batch size for better rate limit utilization
         progress = tqdm(total=len(titles_to_fetch), desc="Fetching articles", unit="article")
         try:
-            for i in range(0, len(titles_to_fetch), batch_size):
-                batch_titles = titles_to_fetch[i : i + batch_size]
+            for i in range(0, len(titles_to_fetch), optimal_batch_size):
+                batch_titles = titles_to_fetch[i : i + optimal_batch_size]
+                # Process batch with rate limiting built into the client
                 batch_articles = await client.get_articles_batch(
                     batch_titles,
                     fetch_links=False,
@@ -248,6 +272,19 @@ async def main_async(
 
         logger.info("Loaded %d existing articles from previous run", len(existing_articles))
 
+    # Load rate limit from config
+    import yaml
+    config_path = "config.yaml"
+    rate_limit = 200.0  # Default
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+            rate_limit = float(config.get("data", {}).get("wikipedia", {}).get("api_rate_limit", 200.0))
+            logger.info("Loaded rate limit from config: %.1f req/sec", rate_limit)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not load rate limit from config, using default: %s", exc)
+
     articles = await fetch_corpus_async(
         max_articles=max_articles,
         per_query_limit=per_query_limit,
@@ -255,6 +292,7 @@ async def main_async(
         max_workers=max_workers,
         existing_articles=existing_articles,
         checkpoint_path=RAW_DATA_PATH,
+        rate_limit=rate_limit,
     )
     save_articles(articles, RAW_DATA_PATH)
     

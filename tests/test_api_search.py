@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from src.api.main import app
 from src.serving.search_engine import HybridSearchEngine, SearchResult
+from src.research.wikidata_linker import WikidataLinker
 
 
 @pytest.fixture
@@ -35,10 +36,49 @@ def mock_search_engine():
 
 
 @pytest.fixture
-def client_with_search_engine(mock_search_engine):
-    """Create a test client with search engine injected."""
+def mock_cleaned_articles_df():
+    """Create mock cleaned articles DataFrame with metadata."""
+    return pd.DataFrame({
+        "title": ["Machine Learning", "Deep Learning", "Cooking Pasta"],
+        "cleaned_text": ["text1", "text2", "text3"],
+        "categories": [
+            ["Computer Science", "AI"],
+            ["Computer Science", "Neural Networks"],
+            ["Food", "Cooking"],
+        ],
+        "links": [
+            ["Deep Learning", "AI"],
+            ["Machine Learning"],
+            ["Pasta", "Sauce"],
+        ],
+    })
+
+
+@pytest.fixture
+def mock_topic_index():
+    """Create a mock TopicIndex."""
+    mock_index = MagicMock()
+    mock_index.lookup.return_value = MagicMock(cluster_id=0)
+    return mock_index
+
+
+@pytest.fixture
+def mock_wikidata_linker():
+    """Create a mock WikidataLinker."""
+    linker = MagicMock(spec=WikidataLinker)
+    linker.link_entity.return_value = "Q1234"
+    linker.get_wikidata_url.return_value = "https://www.wikidata.org/wiki/Q1234"
+    return linker
+
+
+@pytest.fixture
+def client_with_search_engine(mock_search_engine, mock_cleaned_articles_df, mock_topic_index, mock_wikidata_linker):
+    """Create a test client with search engine and metadata services injected."""
     with patch("src.api.main._search_engine", mock_search_engine):
-        yield TestClient(app)
+        with patch("src.api.main._cleaned_articles_df", mock_cleaned_articles_df):
+            with patch("src.api.main._topic_index", mock_topic_index):
+                with patch("src.api.main._wikidata_linker", mock_wikidata_linker):
+                    yield TestClient(app)
 
 
 def test_search_endpoint_returns_results(client_with_search_engine):
@@ -57,7 +97,7 @@ def test_search_endpoint_returns_results(client_with_search_engine):
     assert data["total_results"] >= 0
 
 
-def test_search_endpoint_empty_query(client_with_search_engine):
+def test_api_search_endpoint_empty_query(client_with_search_engine):
     """Test that empty query returns empty results gracefully."""
     response = client_with_search_engine.post(
         "/api/search",
@@ -70,7 +110,7 @@ def test_search_endpoint_empty_query(client_with_search_engine):
     assert data["results"] == []
 
 
-def test_search_endpoint_without_engine_returns_503():
+def test_api_search_endpoint_without_engine_returns_503():
     """Test that search endpoint returns 503 when engine is not available."""
     with patch("src.api.main._search_engine", None):
         client = TestClient(app)
@@ -83,7 +123,7 @@ def test_search_endpoint_without_engine_returns_503():
         assert "not available" in response.json()["detail"].lower()
 
 
-def test_search_endpoint_validates_top_k(client_with_search_engine):
+def test_api_search_endpoint_validates_top_k(client_with_search_engine):
     """Test that top_k is clamped to reasonable values."""
     # Test with very large top_k (should be clamped)
     response = client_with_search_engine.post(
@@ -97,7 +137,7 @@ def test_search_endpoint_validates_top_k(client_with_search_engine):
     assert len(data["results"]) <= 50
 
 
-def test_search_results_have_required_fields(client_with_search_engine):
+def test_api_search_results_have_required_fields(client_with_search_engine):
     """Test that search results contain all required fields."""
     response = client_with_search_engine.post(
         "/api/search",
@@ -117,7 +157,7 @@ def test_search_results_have_required_fields(client_with_search_engine):
             assert isinstance(result["rank"], int)
 
 
-def test_search_endpoint_rate_limited(client_with_search_engine):
+def test_api_search_endpoint_rate_limited(client_with_search_engine):
     """Test that search endpoint respects rate limiting."""
     # Make multiple rapid requests
     responses = []
@@ -130,4 +170,106 @@ def test_search_endpoint_rate_limited(client_with_search_engine):
 
     # All should succeed (rate limit is 100/minute, so 5 requests should be fine)
     assert all(status == 200 for status in responses)
+
+
+def test_api_search_results_have_metadata(client_with_search_engine):
+    """Test that search results include rich metadata."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 5},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        # Check for enhanced metadata fields
+        assert "wikipedia_url" in result
+        assert "wikidata_qid" in result
+        assert "wikidata_url" in result
+        assert "cluster_id" in result
+        assert "categories" in result
+        assert "link_count" in result
+        
+        # Check types
+        assert isinstance(result["wikipedia_url"], str)
+        assert isinstance(result["categories"], list)
+        assert isinstance(result["link_count"], int)
+
+
+def test_api_search_wikipedia_url_generation(client_with_search_engine):
+    """Test that Wikipedia URLs are correctly generated."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 1},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        assert result["wikipedia_url"].startswith("https://en.wikipedia.org/wiki/")
+
+
+def test_api_search_wikidata_linking(client_with_search_engine):
+    """Test that Wikidata linking works in search results."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 1},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        # Should have Wikidata QID and URL (from mock)
+        assert result["wikidata_qid"] == "Q1234"
+        assert result["wikidata_url"] == "https://www.wikidata.org/wiki/Q1234"
+
+
+def test_api_search_cluster_id_in_results(client_with_search_engine):
+    """Test that cluster IDs are included in search results."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 1},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        # Should have cluster_id (from mock topic index)
+        assert result["cluster_id"] == 0
+
+
+def test_api_search_categories_in_results(client_with_search_engine):
+    """Test that categories are included in search results."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 1},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        # Should have categories from cleaned articles
+        assert isinstance(result["categories"], list)
+        assert len(result["categories"]) > 0
+
+
+def test_api_search_link_count_in_results(client_with_search_engine):
+    """Test that link counts are included in search results."""
+    resp = client_with_search_engine.post(
+        "/api/search",
+        json={"query": "machine learning", "top_k": 1},
+    )
+    assert resp.status_code == 200
+    
+    data = resp.json()
+    if len(data["results"]) > 0:
+        result = data["results"][0]
+        # Should have link_count
+        assert isinstance(result["link_count"], int)
+        assert result["link_count"] >= 0
 

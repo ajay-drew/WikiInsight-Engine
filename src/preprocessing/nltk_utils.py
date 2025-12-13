@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Iterable, List
 
 logger = logging.getLogger(__name__)
@@ -83,28 +84,119 @@ def normalize_text(
         return " ".join(tokens)
 
     # Ensure required NLTK data packages are available. If they are not,
-    # we log a warning and fall back to the simple normalizer.
+    # try to download them automatically, then fall back if that fails.
     try:
-        # These will raise LookupError if resources are missing.
-        _ = stopwords.words("english")  # type: ignore[call-arg]
-        _ = nltk.data.find("tokenizers/punkt")
-    except LookupError:
-        logger.warning(
-            "Required NLTK data packages (e.g. 'punkt', 'stopwords') are missing. "
-            "Run: python -m nltk.downloader punkt stopwords wordnet",
-        )
-        tokens = _simple_normalize(text)
-        return " ".join(tokens)
+        # Check stopwords
+        try:
+            _ = stopwords.words("english")  # type: ignore[call-arg]
+        except LookupError:
+            logger.info("Downloading NLTK stopwords...")
+            nltk.download("stopwords", quiet=True)
+            _ = stopwords.words("english")  # type: ignore[call-arg]
+
+        # Check punkt tokenizer (try both old and new versions)
+        punkt_available = False
+        for punkt_name in ["tokenizers/punkt_tab", "tokenizers/punkt"]:
+            try:
+                _ = nltk.data.find(punkt_name)
+                punkt_available = True
+                break
+            except LookupError:
+                continue
+
+        if not punkt_available:
+            logger.info("Downloading NLTK punkt tokenizer...")
+            # Try downloading punkt_tab first (newer versions), then fall back to punkt
+            downloaded = False
+            for resource_name in ["punkt_tab", "punkt"]:
+                try:
+                    nltk.download(resource_name, quiet=True)
+                    # Verify download worked by checking if we can find it now
+                    try:
+                        if resource_name == "punkt_tab":
+                            _ = nltk.data.find("tokenizers/punkt_tab")
+                        else:
+                            _ = nltk.data.find("tokenizers/punkt")
+                        punkt_available = True
+                        downloaded = True
+                        logger.info("Successfully downloaded NLTK %s tokenizer", resource_name)
+                        break
+                    except LookupError:
+                        # Download didn't work, try next resource
+                        continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed to download %s: %s", resource_name, exc)
+                    continue
+            
+            if not downloaded:
+                logger.warning(
+                    "Failed to download punkt tokenizer. "
+                    "NLTK tokenization will not work, falling back to simple tokenizer."
+                )
+
+        # Check wordnet for lemmatization
+        try:
+            from nltk.corpus import wordnet  # noqa: F401
+        except LookupError:
+            logger.info("Downloading NLTK wordnet...")
+            nltk.download("wordnet", quiet=True)
+
     except Exception as exc:  # noqa: BLE001
         logger.warning("NLTK setup failed, falling back to simple normalization: %s", exc)
         tokens = _simple_normalize(text)
         return " ".join(tokens)
 
-    # At this point we know the core NLTK resources are present.
+    # At this point we've attempted to ensure NLTK resources are present.
+    # Try to use word_tokenize, but if it fails (e.g., punkt still not available),
+    # try downloading again with verbose output, then fall back gracefully.
+    raw_tokens = None
     try:
         raw_tokens = word_tokenize(text.lower())  # type: ignore[operator]
+    except LookupError as exc:
+        # Resource still missing even after download attempt - try one more download with verbose output
+        error_msg = str(exc)
+        if "punkt" in error_msg.lower():
+            logger.info("punkt tokenizer still missing after download attempt. Retrying download with verbose output...")
+            download_succeeded = False
+            for resource_name in ["punkt_tab", "punkt"]:
+                try:
+                    logger.info("Attempting to download %s...", resource_name)
+                    nltk.download(resource_name, quiet=False)  # Show output this time
+                    # Small delay to ensure download is complete
+                    time.sleep(0.5)
+                    # Try word_tokenize again
+                    raw_tokens = word_tokenize(text.lower())  # type: ignore[operator]
+                    logger.info("Successfully downloaded and loaded %s after retry", resource_name)
+                    download_succeeded = True
+                    break
+                except LookupError:
+                    # Still not found, try next resource
+                    continue
+                except Exception as download_exc:  # noqa: BLE001
+                    logger.debug("Download of %s failed: %s", resource_name, download_exc)
+                    continue
+            
+            if not download_succeeded:
+                logger.warning(
+                    "NLTK word_tokenize failed after download retry attempts. "
+                    "Using simple tokenizer instead. Error: %s",
+                    exc,
+                )
+                tokens = _simple_normalize(text)
+                return " ".join(tokens)
+        else:
+            # Some other LookupError
+            logger.warning("NLTK word_tokenize failed, using simple tokenizer instead: %s", exc)
+            tokens = _simple_normalize(text)
+            return " ".join(tokens)
     except Exception as exc:  # noqa: BLE001
         logger.warning("NLTK word_tokenize failed, using simple tokenizer instead: %s", exc)
+        tokens = _simple_normalize(text)
+        return " ".join(tokens)
+    
+    # If we get here, raw_tokens should be set (either from first try or retry)
+    if raw_tokens is None:
+        # This shouldn't happen, but just in case
         tokens = _simple_normalize(text)
         return " ".join(tokens)
 
