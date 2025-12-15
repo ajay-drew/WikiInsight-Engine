@@ -1,8 +1,8 @@
 import React from "react";
 
 type LayoutProps = {
-  activePage: "lookup" | "clusters" | "search" | "monitoring";
-  onChangePage: (page: "lookup" | "clusters" | "search" | "monitoring") => void;
+  activePage: "lookup" | "clusters" | "search" | "monitoring" | "ingestion";
+  onChangePage: (page: "lookup" | "clusters" | "search" | "monitoring" | "ingestion") => void;
   children: React.ReactNode;
 };
 
@@ -57,6 +57,16 @@ export function Layout({ activePage, onChangePage, children }: LayoutProps) {
               }`}
             >
               Monitoring
+            </button>
+            <button
+              onClick={() => onChangePage("ingestion")}
+              className={`px-3 py-1.5 rounded text-sm transition-colors ${
+                activePage === "ingestion"
+                  ? "bg-sky-500 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
+            >
+              Ingestion
             </button>
           </nav>
         </div>

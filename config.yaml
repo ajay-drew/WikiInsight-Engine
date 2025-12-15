@@ -1,99 +1,66 @@
-# WikiInsight Engine Configuration
-
-# Data Sources
 data:
   wikipedia:
-    site: "en.wikipedia.org"
-    api_rate_limit: 200  # requests per second
-    cache_ttl: 3600  # seconds
-
-# Ingestion configuration
+    site: en.wikipedia.org
+    api_rate_limit: 200
+    cache_ttl: 3600
 ingestion:
-  # Maximum number of links to keep per article when fetching from Wikipedia.
+  seed_queries:
+  - Natural Language Processing
+  - Robotics
+  - Artificial Intelligence
+  - Computer Vision
+  - Artificial General Intelligence
+  per_query_limit: 50
+  max_articles: 1000
   max_links_per_article: 50
-  # Articles with fewer words than this threshold are treated as stubs and dropped.
   stub_min_words: 200
-  # Defaults used by the async ingestion CLI when no flags are provided.
   default_max_articles: 1000
   default_per_query_limit: 50
-
-# Models / Clustering
 models:
   clustering:
-    # Clustering method:
-    # - "agglomerative": hierarchical clustering (recommended for topic drill-down)
-    # - "kmeans": flat clustering
-    # - "minibatch_kmeans": scalable KMeans variant
-    method: "agglomerative"
+    method: agglomerative
     n_clusters: 100
     random_state: 42
-  
   neighbors:
     n_neighbors: 10
-    algorithm: "auto"
-
-# Preprocessing
+    algorithm: auto
 preprocessing:
   embeddings:
-    model: "all-MiniLM-L6-v2"
+    model: all-MiniLM-L6-v2
     batch_size: 32
-
-# Search / BM25 configuration
 search:
   bm25:
-    # Relative importance of matches in the article title vs body text.
-    # Higher title_weight means queries that appear in the title (e.g. "Python (programming language)")
-    # are ranked above articles where the term only appears in the body.
     title_weight: 2.0
     body_weight: 1.0
-    # When true, use NLTK-based normalization (lowercase, stopwords, lemmatization) for BM25.
-    # If NLTK or its data packages are missing, the code falls back to a simple regex tokenizer.
     use_nltk_normalization: true
-
-# API
 api:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
   workers: 4
-  rate_limit: 100  # requests per minute
-
-
-# MLOps
+  rate_limit: 100
 mlops:
   dvc:
-    remote: "local"  # or "s3", "gcs"
-  
+    remote: local
   mlflow:
-    tracking_uri: "sqlite:///mlflow.db"
-    experiment_name: "wikiinsight"
-
-# Monitoring
+    tracking_uri: sqlite:///mlflow.db
+    experiment_name: wikiinsight
 monitoring:
   drift:
     enabled: true
-    threshold: 0.3  # KS test p-value threshold
+    threshold: 0.3
     check_after_clustering: true
   stability:
     enabled: true
-    ari_threshold: 0.7  # Minimum ARI for stability
-
-# Graph configuration
+    ari_threshold: 0.7
 graph:
-  semantic_similarity_threshold: 0.7  # Minimum cosine similarity for semantic edges
-  max_nodes_per_visualization: 100  # Limit for graph display
-  enable_cluster_edges: true  # Whether to include cluster relationship edges
-
-# Wikidata configuration
+  semantic_similarity_threshold: 0.7
+  max_nodes_per_visualization: 100
+  enable_cluster_edges: true
 wikidata:
-  enabled: true  # Enable/disable Wikidata linking
-  cache_path: "data/entities/wikidata_mappings.parquet"
-  request_delay: 0.3  # Delay in seconds between API requests to respect rate limits
-  # Note: Wikidata API requires User-Agent header and has rate limits (~200 req/min)
-  # Requests without proper User-Agent may be blocked with 403 Forbidden
-
-# Logging
+  enabled: true
+  cache_path: data/entities/wikidata_mappings.parquet
+  request_delay: 0.3
 logging:
-  level: "INFO"
-  format: "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-  file: "logs/wikiinsight.log"
-
+  level: INFO
+  format: '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+  file: logs/wikiinsight.log

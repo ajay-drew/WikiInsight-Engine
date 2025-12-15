@@ -26,12 +26,14 @@ import joblib
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.cluster import AgglomerativeClustering, KMeans, MiniBatchKMeans
+from sklearn.cluster import AgglomerativeClustering, KMeans, MiniBatchKMeans  # noqa: F401
 from sklearn.metrics import pairwise_distances
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
+from src.common.pipeline_progress import update_progress, mark_stage_completed, mark_stage_error
+# GPU utilities removed - using CPU only
 
 logger = logging.getLogger(__name__)
 
@@ -269,11 +271,13 @@ class AgglomerativeWrapper:
         self.method = "agglomerative"
 
 
-def make_clusterer(embeddings: np.ndarray, cfg: Dict):
+def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
+    # GPU support removed - always use CPU (use_gpu parameter kept for compatibility but ignored)
     method = (cfg.get("method") or "kmeans").lower()
     n_clusters = int(cfg.get("n_clusters", 100))
     random_state = int(cfg.get("random_state", 42))
 
+    # CPU implementation (sklearn) - GPU support removed
     # NOTE:
     #   - We keep KMeans/MiniBatchKMeans support for tests and backward
     #     compatibility.
@@ -286,12 +290,12 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict):
             random_state=random_state,
             n_init="auto",
         )
-        logger.info("Fitting MiniBatchKMeans with n_clusters=%d", n_clusters)
+        logger.info("Fitting MiniBatchKMeans (CPU) with n_clusters=%d", n_clusters)
         labels = model.fit_predict(embeddings)
         return model, labels
 
     if method == "agglomerative":
-        logger.info("Fitting AgglomerativeClustering with n_clusters=%d", n_clusters)
+        logger.info("Fitting AgglomerativeClustering (CPU) with n_clusters=%d", n_clusters)
         agg = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
         labels = agg.fit_predict(embeddings)
 
@@ -464,20 +468,44 @@ def compute_cluster_summaries(
 
 
 def save_json(obj: Dict, path: str) -> None:
+    """Save dictionary to JSON file, filtering out non-serializable values."""
+    from types import FunctionType
+    
+    # Filter out non-serializable values (functions, etc.)
+    def make_serializable(value):
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        elif isinstance(value, (list, tuple)):
+            return [make_serializable(item) for item in value]
+        elif isinstance(value, dict):
+            return {k: make_serializable(v) for k, v in value.items()}
+        elif isinstance(value, FunctionType):
+            return None  # Skip functions
+        else:
+            return str(value)  # Convert other types to string
+    
+    serializable_obj = make_serializable(obj)
+    
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2)
+        json.dump(serializable_obj, f, indent=2)
 
 
 def main() -> None:
     setup_logging()
     logger.info("Starting topic clustering pipeline")
+    
+    logger.info("Using CPU clustering (sklearn) - GPU support removed")
 
     try:
         config = load_config(CONFIG_PATH)
         model_cfg = config.get("models", {}).get("clustering", {})
         nn_cfg = config.get("models", {}).get("neighbors", {})
+        
+        # GPU support removed - always use CPU
+        use_gpu = False
 
+        update_progress("clustering", "running", 0.0, "Loading embeddings and articles...")
         emb_df, embeddings = load_embeddings()
         cleaned_df = load_cleaned_articles()
 
@@ -491,17 +519,29 @@ def main() -> None:
         titles = emb_df["title"].astype(str).tolist()
         cleaned_texts = cleaned_df["cleaned_text"].astype(str).tolist()
 
+        device_str = "CPU (sklearn)"
         logger.info(
-            "Clustering %d articles into ~%s clusters (method=%s)...",
+            "Clustering %d articles into ~%s clusters (method=%s, device=%s)...",
             len(titles),
             model_cfg.get("n_clusters", "unknown"),
             model_cfg.get("method", "kmeans"),
+            device_str,
         )
-        model, labels = make_clusterer(embeddings, model_cfg)
+        
+        update_progress(
+            "clustering",
+            "running",
+            10.0,
+            f"Fitting clustering model on {device_str}...",
+        )
+        model, labels = make_clusterer(embeddings, model_cfg, use_gpu=False)
+        
+        update_progress("clustering", "running", 50.0, "Building nearest-neighbor index...")
 
         logger.info("Building nearest-neighbor index for similar-article lookup...")
         nn_index = build_nn_index(embeddings, nn_cfg)
 
+        update_progress("clustering", "running", 60.0, "Saving clustering artifacts...")
         # Prepare outputs
         os.makedirs(MODEL_DIR, exist_ok=True)
         joblib.dump(model, KMEANS_MODEL_PATH)
@@ -511,6 +551,7 @@ def main() -> None:
         assignments_df.to_parquet(CLUSTER_ASSIGNMENTS_PATH, index=False)
 
         centers = model.cluster_centers_
+        update_progress("clustering", "running", 70.0, "Computing cluster summaries...")
         logger.info("Computing cluster summaries (keywords and representative articles)...")
         summaries_df = compute_cluster_summaries(
             titles=titles,
@@ -520,6 +561,7 @@ def main() -> None:
             centers=centers,
         )
         logger.info("Cluster summaries computed successfully")
+        update_progress("clustering", "running", 95.0, "Finalizing metrics...")
         summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
 
         # Calculate cluster size distribution
@@ -609,20 +651,24 @@ def main() -> None:
             logger.warning("MLflow logging for clustering skipped or failed: %s", exc)
 
         logger.info("Topic clustering complete. Wrote artifacts to %s", MODEL_DIR)
+        mark_stage_completed("clustering", "Clustering complete")
     except FileNotFoundError as exc:
+        error_msg = f"Clustering failed: required inputs missing: {exc}"
         logger.error(
-            "Clustering failed because required inputs are missing: %s. "
-            "Make sure the preprocessing stage has completed successfully "
+            "%s. Make sure the preprocessing stage has completed successfully "
             "and produced both embeddings and cleaned_articles parquet files.",
-            exc,
+            error_msg,
         )
+        mark_stage_error("clustering", error_msg)
         raise
     except Exception as exc:  # noqa: BLE001
+        error_msg = f"Clustering pipeline failed: {exc}"
         logger.exception(
-            "Clustering pipeline failed: %s. Consider reducing 'n_clusters' in config.yaml "
+            "%s. Consider reducing 'n_clusters' in config.yaml "
             "or re-running preprocessing to regenerate embeddings.",
-            exc,
+            error_msg,
         )
+        mark_stage_error("clustering", error_msg)
         raise
 
 

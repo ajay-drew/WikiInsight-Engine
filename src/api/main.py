@@ -8,6 +8,7 @@ Exposes endpoints for:
 - Cluster-level explanations/summaries.
 """
 
+import json
 import logging
 import urllib.parse
 from contextlib import asynccontextmanager
@@ -16,15 +17,18 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import os
 
 from src.common.logging_utils import setup_logging
 from src.modeling.topic_index import TopicIndex
 from src.serving.search_engine import HybridSearchEngine
-from src.preprocessing.embeddings import EmbeddingGenerator
+# EmbeddingGenerator imported lazily in lifespan() to avoid torch DLL issues during pytest collection
 from src.graph.graph_service import GraphService
 from src.research.wikidata_linker import WikidataLinker
 
@@ -46,32 +50,37 @@ def _get_wikipedia_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{encoded}"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup/shutdown events."""
+def _load_all_data() -> None:
+    """
+    Load all data artifacts (topic index, search engine, graph service).
+    This should be called after pipeline completes.
+    """
+    from tqdm import tqdm
+    
     global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
-    # Startup
+    
+    load_start = perf_counter()
+    logger.info("=" * 80)
+    logger.info("Starting data loading process...")
+    logger.info("=" * 80)
+    
+    # Load topic index
+    topic_index_start = perf_counter()
     try:
         _topic_index = TopicIndex.load_default()
-        logger.info("Topic index loaded successfully")
+        topic_index_time = perf_counter() - topic_index_start
+        logger.info("Topic index loaded successfully in %.2f seconds", topic_index_time)
     except FileNotFoundError as exc:
-        # Provide helpful message for missing artifacts
-        logger.warning(
-            "Topic index artifacts not found. API will run in degraded mode.\n"
-            "To generate the required artifacts, run:\n"
-            "  dvc repro\n"
-            "  OR\n"
-            "  python -m src.ingestion.fetch_wikipedia_data\n"
-            "  python -m src.preprocessing.process_data\n"
-            "  python -m src.modeling.cluster_topics\n"
-            f"Original error: {exc}"
-        )
+        topic_index_time = perf_counter() - topic_index_start
+        logger.warning("Topic index artifacts not found (%.2f seconds): %s", topic_index_time, exc)
         _topic_index = None
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to load topic index: %s", exc)
+        topic_index_time = perf_counter() - topic_index_start
+        logger.exception("Failed to load topic index (%.2f seconds): %s", topic_index_time, exc)
         _topic_index = None
 
     # Load HybridSearchEngine
+    search_engine_start = perf_counter()
     try:
         import os
         import pandas as pd
@@ -84,21 +93,36 @@ async def lifespan(app: FastAPI):
 
         if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
             # Load articles
+            logger.info("Loading cleaned articles from %s...", CLEANED_ARTICLES_PATH)
+            articles_load_start = perf_counter()
             cleaned_df = pd.read_parquet(CLEANED_ARTICLES_PATH)
-            _cleaned_articles_df = cleaned_df  # Store for metadata lookup
+            articles_load_time = perf_counter() - articles_load_start
+            logger.info("Loaded %d articles in %.2f seconds", len(cleaned_df), articles_load_time)
+            _cleaned_articles_df = cleaned_df
             articles = [
                 {
                     "title": row["title"],
                     "text": row.get("cleaned_text", row.get("raw_text", "")),
                 }
-                for _, row in cleaned_df.iterrows()
+                for _, row in tqdm(cleaned_df.iterrows(), total=len(cleaned_df), desc="Preparing articles", unit="article")
             ]
 
             # Load embeddings
+            logger.info("Loading embeddings from %s...", EMBEDDINGS_PATH)
+            embeddings_load_start = perf_counter()
             emb_df = pd.read_parquet(EMBEDDINGS_PATH)
+            embeddings_load_time = perf_counter() - embeddings_load_start
+            logger.info("Loaded embeddings DataFrame in %.2f seconds", embeddings_load_time)
+            
+            logger.info("Stacking embeddings into numpy array...")
+            stack_start = perf_counter()
             embeddings = np.vstack(emb_df["embedding"].to_list())
+            stack_time = perf_counter() - stack_start
+            logger.info("Stacked embeddings in %.2f seconds (shape: %s)", stack_time, embeddings.shape)
 
             # Load embedding model and search configuration
+            logger.info("Loading embedding model...")
+            model_load_start = perf_counter()
             config = yaml.safe_load(open(CONFIG_PATH, "r"))
             model_name = config.get("preprocessing", {}).get("embeddings", {}).get(
                 "model",
@@ -108,8 +132,13 @@ async def lifespan(app: FastAPI):
             title_weight = float(bm25_cfg.get("title_weight", 2.0))
             body_weight = float(bm25_cfg.get("body_weight", 1.0))
             use_nltk_normalization = bool(bm25_cfg.get("use_nltk_normalization", True))
+            from src.preprocessing.embeddings import EmbeddingGenerator
             embedding_model = EmbeddingGenerator(model_name=model_name)
+            model_load_time = perf_counter() - model_load_start
+            logger.info("Embedding model loaded in %.2f seconds", model_load_time)
 
+            logger.info("Initializing HybridSearchEngine...")
+            engine_init_start = perf_counter()
             _search_engine = HybridSearchEngine(
                 articles=articles,
                 embeddings=embeddings,
@@ -118,29 +147,35 @@ async def lifespan(app: FastAPI):
                 title_weight=title_weight,
                 body_weight=body_weight,
             )
+            engine_init_time = perf_counter() - engine_init_start
+            search_engine_time = perf_counter() - search_engine_start
+            logger.info("HybridSearchEngine initialized in %.2f seconds (total: %.2f seconds)", 
+                       engine_init_time, search_engine_time)
             logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
         else:
-            logger.warning(
-                "Search engine artifacts not found. Search endpoint will be unavailable.\n"
-                "To generate the required artifacts, run:\n"
-                "  dvc repro"
-            )
+            search_engine_time = perf_counter() - search_engine_start
+            logger.warning("Search engine artifacts not found (checked in %.2f seconds)", search_engine_time)
             _search_engine = None
             _cleaned_articles_df = None
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to load HybridSearchEngine: %s", exc)
+        search_engine_time = perf_counter() - search_engine_start
+        logger.exception("Failed to load HybridSearchEngine (%.2f seconds): %s", search_engine_time, exc)
         _search_engine = None
         _cleaned_articles_df = None
 
     # Load graph service
+    graph_start = perf_counter()
     try:
         _graph_service = GraphService()
-        logger.info("Graph service loaded successfully")
+        graph_time = perf_counter() - graph_start
+        logger.info("Graph service loaded successfully in %.2f seconds", graph_time)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Graph service not available: %s", exc)
+        graph_time = perf_counter() - graph_start
+        logger.warning("Graph service not available (%.2f seconds): %s", graph_time, exc)
         _graph_service = None
 
     # Load Wikidata linker
+    wikidata_start = perf_counter()
     try:
         import yaml
         config = yaml.safe_load(open("config.yaml", "r"))
@@ -153,20 +188,77 @@ async def lifespan(app: FastAPI):
             enabled=enabled,
             request_delay=request_delay,
         )
-        logger.info("Wikidata linker initialized")
+        wikidata_time = perf_counter() - wikidata_start
+        logger.info("Wikidata linker initialized in %.2f seconds", wikidata_time)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Wikidata linker not available: %s", exc)
+        wikidata_time = perf_counter() - wikidata_start
+        logger.warning("Wikidata linker not available (%.2f seconds): %s", wikidata_time, exc)
         _wikidata_linker = None
+    
+    total_time = perf_counter() - load_start
+    logger.info("=" * 80)
+    logger.info("Data loading completed in %.2f seconds (%.1f minutes)", total_time, total_time / 60)
+    logger.info("Time breakdown:")
+    logger.info("  - Topic index: %.2f seconds (%.1f%%)", 
+               topic_index_time if 'topic_index_time' in locals() else 0,
+               (topic_index_time / total_time * 100) if total_time > 0 and 'topic_index_time' in locals() else 0)
+    logger.info("  - Search engine: %.2f seconds (%.1f%%)", 
+               search_engine_time if 'search_engine_time' in locals() else 0,
+               (search_engine_time / total_time * 100) if total_time > 0 and 'search_engine_time' in locals() else 0)
+    logger.info("  - Graph service: %.2f seconds (%.1f%%)", 
+               graph_time if 'graph_time' in locals() else 0,
+               (graph_time / total_time * 100) if total_time > 0 and 'graph_time' in locals() else 0)
+    logger.info("  - Wikidata linker: %.2f seconds (%.1f%%)", 
+               wikidata_time if 'wikidata_time' in locals() else 0,
+               (wikidata_time / total_time * 100) if total_time > 0 and 'wikidata_time' in locals() else 0)
+    logger.info("=" * 80)
 
-    yield
-    # Shutdown (if needed)
+
+def _clear_all_data() -> None:
+    """Clear all loaded data. Called when a new pipeline starts."""
+    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
+    
     if _wikidata_linker:
-        _wikidata_linker.finalize()
+        try:
+            _wikidata_linker.finalize()
+        except Exception:  # noqa: BLE001
+            pass
+    
     _topic_index = None
     _search_engine = None
     _graph_service = None
     _wikidata_linker = None
     _cleaned_articles_df = None
+    logger.info("All data cleared - ready for new pipeline run")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
+    # Startup - DO NOT load data automatically
+    # Data will be loaded only after pipeline completes via /api/pipeline/reload endpoint
+    logger.info("API started. Data will be loaded after pipeline completes.")
+    _topic_index = None
+    _search_engine = None
+    _graph_service = None
+    _wikidata_linker = None
+    _cleaned_articles_df = None
+
+    yield
+    # Shutdown (if needed) - handle errors gracefully
+    try:
+        if _wikidata_linker:
+            _wikidata_linker.finalize()
+    except Exception:  # noqa: BLE001
+        logger.warning("Error during Wikidata linker finalization", exc_info=True)
+    finally:
+        # Always clean up references
+        _topic_index = None
+        _search_engine = None
+        _graph_service = None
+        _wikidata_linker = None
+        _cleaned_articles_df = None
 
 
 app = FastAPI(
@@ -190,6 +282,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Serve static frontend files (if frontend/dist exists)
+# Note: Static assets mount and catch-all route are defined at the END of the file
+# to ensure API routes are matched first
+FRONTEND_DIST_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend", "dist")
 
 class TopicQueryRequest(BaseModel):
     """Request model for topic/cluster exploration."""
@@ -295,7 +391,10 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint - serves frontend if available, otherwise returns API info."""
+    index_path = os.path.join(FRONTEND_DIST_PATH, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
     return {"message": "WikiInsight Engine API", "version": "0.1.0"}
 
 
@@ -761,6 +860,265 @@ async def get_cluster_stability(request: Request):
     
     stability = calculate_cluster_stability()
     return stability
+
+
+# Pipeline endpoints
+class PipelineConfigRequest(BaseModel):
+    """Request model for pipeline configuration."""
+    seed_queries: List[str]  # 3-6 queries
+    per_query_limit: int  # 1-70
+    max_articles: int = 1000  # Hard cap
+
+
+@app.post("/api/pipeline/start")
+@limiter.limit("10/minute")
+async def start_pipeline(request: Request, body: PipelineConfigRequest):
+    """
+    Start pipeline with user-provided configuration.
+    
+    Validates configuration and writes to config.yaml, then starts background pipeline.
+    Clears old data before starting new pipeline.
+    """
+    from src.ingestion.fetch_wikipedia_data import validate_ingestion_config
+    import yaml
+    import subprocess
+    import os
+    
+    endpoint_start = perf_counter()
+    logger.info("=" * 80)
+    logger.info("Pipeline start request received")
+    logger.info("  - Seed queries: %d", len(body.seed_queries))
+    logger.info("  - Per query limit: %d", body.per_query_limit)
+    logger.info("  - Max articles: %d", body.max_articles)
+    logger.info("=" * 80)
+    
+    try:
+        # Validate configuration
+        validate_start = perf_counter()
+        validate_ingestion_config(body.seed_queries, body.per_query_limit, body.max_articles)
+        validate_time = perf_counter() - validate_start
+        logger.info("Configuration validated in %.2f seconds", validate_time)
+        
+        # Clear old data before starting new pipeline
+        clear_start = perf_counter()
+        _clear_all_data()
+        clear_time = perf_counter() - clear_start
+        logger.info("Old data cleared in %.2f seconds", clear_time)
+        
+        # Load existing config
+        config_load_start = perf_counter()
+        config_path = "config.yaml"
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+        else:
+            config = {}
+        config_load_time = perf_counter() - config_load_start
+        
+        # Update ingestion config
+        config_update_start = perf_counter()
+        if "ingestion" not in config:
+            config["ingestion"] = {}
+        config["ingestion"]["seed_queries"] = body.seed_queries
+        config["ingestion"]["per_query_limit"] = body.per_query_limit
+        config["ingestion"]["max_articles"] = body.max_articles
+        
+        # Write updated config
+        with open(config_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        config_update_time = perf_counter() - config_update_start
+        logger.info("Configuration updated and saved in %.2f seconds", config_update_time)
+        
+        logger.info(
+            "Pipeline configuration: %d queries, per_query_limit=%d, max_articles=%d",
+            len(body.seed_queries),
+            body.per_query_limit,
+            body.max_articles,
+        )
+        
+        # Reset progress tracking
+        progress_start = perf_counter()
+        from src.common.pipeline_progress import reset_progress
+        reset_progress()
+        progress_time = perf_counter() - progress_start
+        logger.info("Progress tracking reset in %.2f seconds", progress_time)
+        
+        # Start full pipeline orchestrator in background (non-blocking)
+        # The orchestrator will run all stages: ingestion -> preprocessing -> clustering -> graph building
+        # Note: In production, you might want to use a task queue like Celery
+        pipeline_script = "python"
+        pipeline_args = ["-m", "src.common.pipeline_orchestrator"]
+        
+        logger.info("Starting pipeline orchestrator in background...")
+        start_process_start = perf_counter()
+        # Start as background process (Windows-compatible)
+        if os.name == "nt":  # Windows
+            process = subprocess.Popen(
+                [pipeline_script] + pipeline_args,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+        else:  # Unix/Linux
+            process = subprocess.Popen([pipeline_script] + pipeline_args)
+        start_process_time = perf_counter() - start_process_start
+        logger.info("Pipeline orchestrator started (PID: %d) in %.2f seconds", process.pid, start_process_time)
+        
+        total_time = perf_counter() - endpoint_start
+        logger.info("=" * 80)
+        logger.info("Pipeline start endpoint completed in %.2f seconds", total_time)
+        logger.info("=" * 80)
+        
+        return {
+            "status": "started",
+            "message": "Pipeline started successfully",
+            "config": {
+                "seed_queries": body.seed_queries,
+                "per_query_limit": body.per_query_limit,
+                "max_articles": body.max_articles,
+            },
+        }
+    except ValueError as exc:
+        total_time = perf_counter() - endpoint_start
+        logger.error("Pipeline start failed (validation error) after %.2f seconds: %s", total_time, exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        total_time = perf_counter() - endpoint_start
+        logger.exception("Failed to start pipeline after %.2f seconds: %s", total_time, exc)
+        raise HTTPException(status_code=500, detail=f"Failed to start pipeline: {str(exc)}")
+
+
+@app.post("/api/pipeline/reload")
+@limiter.limit("10/minute")
+async def reload_data(request: Request):
+    """
+    Reload all data artifacts after pipeline completes.
+    This should be called after the pipeline finishes successfully.
+    """
+    endpoint_start = perf_counter()
+    logger.info("=" * 80)
+    logger.info("Data reload request received")
+    logger.info("=" * 80)
+    
+    try:
+        _load_all_data()
+        
+        total_time = perf_counter() - endpoint_start
+        logger.info("Data reload endpoint completed in %.2f seconds", total_time)
+        
+        # Check what was loaded
+        status = {
+            "topic_index": _topic_index is not None,
+            "search_engine": _search_engine is not None,
+            "graph_service": _graph_service is not None,
+            "wikidata_linker": _wikidata_linker is not None,
+        }
+        
+        return {
+            "status": "reloaded",
+            "message": "Data reloaded successfully",
+            "loaded": status,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to reload data: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to reload data: {str(exc)}")
+
+
+@app.get("/api/pipeline/progress")
+async def stream_pipeline_progress(request: Request):
+    """
+    Stream pipeline progress via Server-Sent Events (SSE).
+    
+    Returns real-time progress updates as SSE events.
+    Automatically reloads data when pipeline completes.
+    """
+    from fastapi.responses import StreamingResponse
+    import asyncio
+    from src.common.pipeline_progress import get_progress as get_pipeline_progress
+    
+    async def event_generator():
+        """Generate SSE events with progress updates."""
+        last_progress = None
+        reloaded = False
+        
+        while True:
+            try:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+                
+                # Get current progress
+                current_progress = get_pipeline_progress()
+                
+                # Only send if progress changed
+                if current_progress != last_progress:
+                    # Format as SSE event
+                    progress_json = json.dumps(current_progress)
+                    yield f"data: {progress_json}\n\n"
+                    last_progress = current_progress
+                
+                # Check if pipeline is complete
+                if current_progress.get("current_stage") is None:
+                    # Check if all stages are completed or error
+                    stages = current_progress.get("stages", {})
+                    all_done = all(
+                        stage.get("status") in ("completed", "error")
+                        for stage in stages.values()
+                    )
+                    if all_done and not reloaded:
+                        # Reload data when pipeline completes
+                        try:
+                            _load_all_data()
+                            reloaded = True
+                            # Send reload notification
+                            reload_event = json.dumps({
+                                "type": "reload",
+                                "status": "completed",
+                                "message": "Data reloaded successfully"
+                            })
+                            yield f"data: {reload_event}\n\n"
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("Failed to auto-reload data: %s", exc)
+                        
+                        # Send final update and close
+                        yield f"data: {json.dumps(current_progress)}\n\n"
+                        break
+                
+                # Wait before next update (1-2 seconds)
+                await asyncio.sleep(1.5)
+                
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error in SSE stream: %s", exc)
+                break
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+# Serve static frontend files - MUST be at the end after all API routes
+# FastAPI matches routes in order, so catch-all must be last to avoid intercepting API routes
+if os.path.exists(FRONTEND_DIST_PATH):
+    # Serve static assets (JS, CSS, images, etc.)
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST_PATH, "assets")), name="assets")
+    
+    # Serve frontend index.html for all non-API routes (catch-all at the end)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """Serve frontend React app for all non-API routes."""
+        # Don't serve frontend for API routes, docs, or openapi
+        if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        index_path = os.path.join(FRONTEND_DIST_PATH, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        else:
+            raise HTTPException(status_code=404, detail="Frontend not found")
 
 
 if __name__ == "__main__":

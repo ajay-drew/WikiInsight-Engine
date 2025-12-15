@@ -15,20 +15,85 @@ from typing import Dict, Iterable, List, Optional
 from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
+from src.common.pipeline_progress import update_progress, reset_progress, mark_stage_completed, mark_stage_error
 from .wikipedia_client_async import AsyncWikipediaClient
 
 # Constants (previously from .constants)
 RAW_DATA_PATH = os.path.join("data", "raw", "articles.json")
-SEED_QUERIES: List[str] = [
-    "Machine learning",
-    "Artificial intelligence",
-    "Data science",
-    "Physics",
-    "Biology",
-    "History",
-]
 
 logger = logging.getLogger(__name__)
+
+
+def load_seed_queries(config_path: str = "config.yaml") -> List[str]:
+    """
+    Load seed queries from config.yaml and validate.
+
+    Args:
+        config_path: Path to config.yaml
+
+    Returns:
+        List of seed query strings (3-6 queries)
+
+    Raises:
+        ValueError: If queries are invalid (not 3-6 queries)
+    """
+    import yaml
+
+    if not os.path.exists(config_path):
+        raise ValueError(f"Config file not found: {config_path}")
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f) or {}
+
+    queries = config.get("ingestion", {}).get("seed_queries", [])
+
+    if not isinstance(queries, list):
+        raise ValueError("seed_queries must be a list")
+
+    # Filter out empty strings and strip whitespace
+    queries = [q.strip() for q in queries if q and q.strip()]
+
+    if len(queries) < 3:
+        raise ValueError(f"Must have at least 3 seed queries, got {len(queries)}")
+    if len(queries) > 6:
+        raise ValueError(f"Must have at most 6 seed queries, got {len(queries)}")
+
+    return queries[:6]  # Enforce max 6
+
+
+def validate_ingestion_config(
+    queries: List[str], per_query_limit: int, max_articles: int
+) -> None:
+    """
+    Validate ingestion configuration.
+
+    Args:
+        queries: List of seed queries
+        per_query_limit: Maximum articles per query (1-70)
+        max_articles: Maximum total articles (hard cap: 1000)
+
+    Raises:
+        ValueError: If configuration is invalid
+    """
+    if len(queries) < 3 or len(queries) > 6:
+        raise ValueError(f"Must have 3-6 seed queries, got {len(queries)}")
+
+    if per_query_limit < 1 or per_query_limit > 70:
+        raise ValueError(f"per_query_limit must be between 1 and 70, got {per_query_limit}")
+
+    if max_articles > 1000:
+        raise ValueError(f"max_articles cannot exceed 1000, got {max_articles}")
+
+    # Check total potential doesn't exceed max_articles
+    total_potential = len(queries) * per_query_limit
+    if total_potential > max_articles:
+        logger.warning(
+            "Total potential articles (%d) exceeds max_articles (%d). "
+            "System will cap at %d articles.",
+            total_potential,
+            max_articles,
+            max_articles,
+        )
 
 
 def _normalize_article(raw: Dict) -> Dict:
@@ -76,6 +141,7 @@ async def fetch_corpus_async(
     batch_size: int = 20,
     max_workers: int = 10,
     *,
+    seed_queries: Optional[List[str]] = None,
     stub_min_words: int = 200,
     existing_articles: Optional[List[Dict]] = None,
     checkpoint_path: Optional[str] = None,
@@ -90,11 +156,18 @@ async def fetch_corpus_async(
         per_query_limit: Maximum search results per seed query.
         batch_size: Number of articles to fetch concurrently in each batch.
         max_workers: Maximum number of concurrent workers.
+        seed_queries: List of seed queries to search (3-6 queries). If None, loads from config.
         rate_limit: Maximum requests per second (default: 200.0).
 
     Returns:
         List of normalized article dictionaries.
     """
+    # Load queries if not provided
+    if seed_queries is None:
+        seed_queries = load_seed_queries()
+
+    # Validate configuration
+    validate_ingestion_config(seed_queries, per_query_limit, max_articles)
     # Optimize batch size and workers based on rate limit
     # We want to maximize throughput while staying under the limit
     # With 200 req/sec, we can process ~200 articles per second
@@ -132,17 +205,22 @@ async def fetch_corpus_async(
         )
 
     try:
+        # Update progress: starting ingestion
+        update_progress("ingestion", "running", 0.0, "Searching Wikipedia for articles...")
+
         # Process all queries concurrently
         search_tasks = [
-            client.search_articles(query, limit=per_query_limit) for query in SEED_QUERIES
+            client.search_articles(query, limit=per_query_limit) for query in seed_queries
         ]
         all_search_results = await asyncio.gather(*search_tasks)
 
         # Collect all unique titles
         titles_to_fetch: List[str] = []
         current_count = len(articles)
+        total_search_results = 0
         for query_idx, search_results in enumerate(all_search_results):
-            query = SEED_QUERIES[query_idx]
+            query = seed_queries[query_idx]
+            total_search_results += len(search_results)
             logger.info("Found %d search results for '%s'", len(search_results), query)
             
             for result in search_results:
@@ -168,9 +246,18 @@ async def fetch_corpus_async(
 
         if not titles_to_fetch:
             logger.info("No new titles to fetch (budget already satisfied by existing articles).")
+            mark_stage_completed("ingestion", "No new articles to fetch")
             return articles
 
         checkpoint_path = checkpoint_path or RAW_DATA_PATH
+
+        # Update progress: found articles, starting fetch
+        update_progress(
+            "ingestion",
+            "running",
+            5.0,
+            f"Found {len(titles_to_fetch)} unique articles. Fetching content...",
+        )
 
         # Fetch articles in batches so we can report progress and checkpoint regularly.
         # Use optimized batch size for better rate limit utilization
@@ -204,6 +291,15 @@ async def fetch_corpus_async(
 
                     articles.append(normalized)
 
+                    # Update progress percentage
+                    progress_pct = min(95.0, 5.0 + (len(articles) / len(titles_to_fetch)) * 90.0)
+                    update_progress(
+                        "ingestion",
+                        "running",
+                        progress_pct,
+                        f"Fetched {len(articles)}/{len(titles_to_fetch)} articles...",
+                    )
+
                     # Periodically checkpoint progress so long runs can resume.
                     if checkpoint_path and len(articles) % checkpoint_interval == 0:
                         logger.info(
@@ -217,13 +313,16 @@ async def fetch_corpus_async(
         finally:
             progress.close()
 
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Error during async corpus fetch")
+        mark_stage_error("ingestion", f"Ingestion failed: {str(exc)}")
+        raise
     finally:
         # Cleanup executor
         client.executor.shutdown(wait=True)
 
     logger.info("Fetched %d articles in total", len(articles))
+    mark_stage_completed("ingestion", f"Successfully fetched {len(articles)} articles")
     return articles
 
 
@@ -250,6 +349,9 @@ async def main_async(
     setup_logging()
     logger.info("Starting async Wikipedia ingestion")
     
+    # Reset progress tracking
+    reset_progress()
+    
     start_time = perf_counter()
 
     if sample is not None:
@@ -272,24 +374,29 @@ async def main_async(
 
         logger.info("Loaded %d existing articles from previous run", len(existing_articles))
 
-    # Load rate limit from config
+    # Load rate limit and seed queries from config
     import yaml
     config_path = "config.yaml"
     rate_limit = 200.0  # Default
+    seed_queries = None
     if os.path.exists(config_path):
         try:
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f) or {}
             rate_limit = float(config.get("data", {}).get("wikipedia", {}).get("api_rate_limit", 200.0))
             logger.info("Loaded rate limit from config: %.1f req/sec", rate_limit)
+            # Load seed queries
+            seed_queries = load_seed_queries(config_path)
+            logger.info("Loaded %d seed queries from config: %s", len(seed_queries), seed_queries)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not load rate limit from config, using default: %s", exc)
+            logger.warning("Could not load config, using defaults: %s", exc)
 
     articles = await fetch_corpus_async(
         max_articles=max_articles,
         per_query_limit=per_query_limit,
         batch_size=batch_size,
         max_workers=max_workers,
+        seed_queries=seed_queries,
         existing_articles=existing_articles,
         checkpoint_path=RAW_DATA_PATH,
         rate_limit=rate_limit,
@@ -309,7 +416,7 @@ async def main_async(
     # Count stubs (articles with < 200 words)
     stub_count = sum(1 for article in articles if len(article.get("text", "").split()) < 200)
     
-    # Optional MLflow logging
+    # Optional MLflow logging (wrapped in try-except to prevent crashes)
     try:
         import mlflow
         import yaml
@@ -325,33 +432,44 @@ async def main_async(
         tracking_uri = ml_cfg.get("tracking_uri")
         experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
         
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        if experiment_name:
-            mlflow.set_experiment(experiment_name)
-        
-        with mlflow.start_run(run_name="ingestion"):
-            # Log parameters
-            mlflow.log_param("max_articles", max_articles)
-            mlflow.log_param("per_query_limit", per_query_limit)
-            mlflow.log_param("batch_size", batch_size)
-            mlflow.log_param("max_workers", max_workers)
-            mlflow.log_param("sample", sample is not None)
-            mlflow.log_param("resume", resume)
-            
-            # Log metrics
-            mlflow.log_metric("articles_fetched", total_articles)
-            mlflow.log_metric("articles_filtered_stubs", stub_count)
-            mlflow.log_metric("avg_article_length_words", avg_words)
-            mlflow.log_metric("total_words", total_words)
-            mlflow.log_metric("total_links", total_links)
-            mlflow.log_metric("avg_links_per_article", avg_links)
-            mlflow.log_metric("fetch_duration_seconds", duration)
-            mlflow.log_metric("articles_per_second", total_articles / duration if duration > 0 else 0)
-            
-            logger.info("Logged ingestion metrics to MLflow")
+        # Only attempt MLflow logging if tracking URI is configured
+        if tracking_uri or experiment_name:
+            try:
+                if tracking_uri:
+                    mlflow.set_tracking_uri(tracking_uri)
+                if experiment_name:
+                    mlflow.set_experiment(experiment_name)
+                
+                with mlflow.start_run(run_name="ingestion"):
+                    # Log parameters
+                    mlflow.log_param("max_articles", max_articles)
+                    mlflow.log_param("per_query_limit", per_query_limit)
+                    mlflow.log_param("batch_size", batch_size)
+                    mlflow.log_param("max_workers", max_workers)
+                    mlflow.log_param("sample", sample is not None)
+                    mlflow.log_param("resume", resume)
+                    
+                    # Log metrics
+                    mlflow.log_metric("articles_fetched", total_articles)
+                    mlflow.log_metric("articles_filtered_stubs", stub_count)
+                    mlflow.log_metric("avg_article_length_words", avg_words)
+                    mlflow.log_metric("total_words", total_words)
+                    mlflow.log_metric("total_links", total_links)
+                    mlflow.log_metric("avg_links_per_article", avg_links)
+                    mlflow.log_metric("fetch_duration_seconds", duration)
+                    mlflow.log_metric("articles_per_second", total_articles / duration if duration > 0 else 0)
+                    
+                    logger.info("Logged ingestion metrics to MLflow")
+            except Exception as mlflow_exc:
+                # Log but don't crash - MLflow is optional
+                logger.warning("MLflow logging failed (non-critical): %s", mlflow_exc)
+        else:
+            logger.debug("MLflow not configured, skipping logging")
+    except ImportError:
+        logger.debug("MLflow not installed, skipping logging")
     except Exception as exc:
-        logger.warning("MLflow logging skipped or failed: %s", exc)
+        # Catch-all to ensure MLflow errors never crash the pipeline
+        logger.warning("MLflow logging skipped or failed (non-critical): %s", exc)
 
 
 def parse_args() -> argparse.Namespace:

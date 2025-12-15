@@ -16,6 +16,7 @@ import pandas as pd
 import yaml
 
 from src.common.logging_utils import setup_logging
+from src.common.pipeline_progress import update_progress, mark_stage_completed, mark_stage_error
 from src.modeling.cluster_topics import (
     CLEANED_ARTICLES_PATH,
     CLUSTER_ASSIGNMENTS_PATH,
@@ -78,6 +79,8 @@ def main() -> None:
     """Main graph construction pipeline."""
     setup_logging()
     logger.info("Starting knowledge graph construction pipeline")
+    
+    update_progress("build_graph", "running", 0.0, "Loading articles, clusters, and embeddings...")
 
     try:
         # Load configuration
@@ -87,8 +90,11 @@ def main() -> None:
         enable_cluster_edges = bool(graph_cfg.get("enable_cluster_edges", True))
 
         # Load data
+        update_progress("build_graph", "running", 20.0, "Loading articles...")
         articles_df = load_articles()
+        update_progress("build_graph", "running", 40.0, "Loading cluster assignments...")
         cluster_assignments = load_cluster_assignments()
+        update_progress("build_graph", "running", 60.0, "Loading embeddings...")
         embeddings = load_embeddings()
 
         # Validate data consistency
@@ -98,6 +104,7 @@ def main() -> None:
             )
 
         # Build graph
+        update_progress("build_graph", "running", 80.0, "Building knowledge graph...")
         builder = KnowledgeGraphBuilder(
             semantic_threshold=semantic_threshold,
             enable_cluster_edges=enable_cluster_edges,
@@ -105,15 +112,21 @@ def main() -> None:
         graph = builder.build_graph(articles_df, cluster_assignments, embeddings)
 
         # Save graph
+        update_progress("build_graph", "running", 95.0, "Saving knowledge graph...")
         os.makedirs(os.path.dirname(GRAPH_PATH), exist_ok=True)
         builder.save_graph(GRAPH_PATH)
 
         logger.info("Knowledge graph construction complete")
+        mark_stage_completed("build_graph", "Knowledge graph construction complete")
     except FileNotFoundError as exc:
-        logger.error("Graph construction failed: %s", exc)
+        error_msg = f"Graph construction failed: {exc}"
+        logger.error(error_msg)
+        mark_stage_error("build_graph", error_msg)
         raise
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Graph construction failed with error: %s", exc)
+        error_msg = f"Graph construction failed: {exc}"
+        logger.exception(error_msg)
+        mark_stage_error("build_graph", error_msg)
         raise
 
 

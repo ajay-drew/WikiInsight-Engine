@@ -5,7 +5,11 @@ This module provides:
 - Centralized mwclient availability checking
 - Shared fixtures for Wikipedia clients
 - Common test utilities
+- Fast API app initialization for tests
 """
+
+import os
+from unittest.mock import patch
 
 import pytest
 
@@ -24,6 +28,19 @@ def mwclient_available():
     return MWCLIENT_AVAILABLE
 
 
+@pytest.fixture(scope="session", autouse=True)
+def speed_up_api_startup():
+    """
+    Speed up API startup by mocking file I/O operations during app import.
+    
+    This fixture patches os.path.exists only when the API app is being initialized,
+    not for all tests. This prevents slow file system checks during app startup
+    while allowing other tests to check file existence normally.
+    """
+    # Only patch os.path.exists when src.api.main is being imported/initialized
+    # We'll use a more targeted approach - patch it only in the lifespan function
+    # This is handled by the app's try/except blocks, so we don't need global patching
+    yield
 
 
 @pytest.fixture

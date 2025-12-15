@@ -5,9 +5,9 @@ stages:
     deps:
     - path: src/ingestion
       hash: md5
-      md5: ef59dc4f378a03a1f5b9fdb21dd71fae.dir
-      size: 32746
-      nfiles: 5
+      md5: cb1ce3265f8ca3412937ef9c62999169.dir
+      size: 30951
+      nfiles: 3
     params:
       params.yaml:
         data:
@@ -18,19 +18,19 @@ stages:
     outs:
     - path: data/raw/articles.json
       hash: md5
-      md5: 7a1822e271757654324e02c217ecf3af
-      size: 18621537
+      md5: 0a4233e1f79c3b8db1af65fdc07f898a
+      size: 7885743
   preprocess:
     cmd: python -m src.preprocessing.process_data
     deps:
     - path: data/raw/articles.json
       hash: md5
-      md5: 7a1822e271757654324e02c217ecf3af
-      size: 18621537
+      md5: 0a4233e1f79c3b8db1af65fdc07f898a
+      size: 7885743
     - path: src/preprocessing
       hash: md5
-      md5: 3f0abd8d5a4cc973ea14b64a6827d296.dir
-      size: 21133
+      md5: 9f2defd145b34e2bd5fdc9166c004268.dir
+      size: 23210
       nfiles: 5
     params:
       params.yaml:
@@ -41,23 +41,23 @@ stages:
     outs:
     - path: data/features/embeddings.parquet
       hash: md5
-      md5: 8a7d196c7262ec78cd314c8f16f04861
-      size: 927481
+      md5: 93ffe1538d0a041cf58ce88c3e97284e
+      size: 455142
     - path: data/processed/cleaned_articles.parquet
       hash: md5
-      md5: 8e9115979756589ef736b8e47f4e0b10
-      size: 18731061
+      md5: adb27f3ab9f2396fab5a520be50a3f7b
+      size: 7556679
   cluster_topics:
     cmd: python -m src.modeling.cluster_topics
     deps:
     - path: data/features/embeddings.parquet
       hash: md5
-      md5: 8a7d196c7262ec78cd314c8f16f04861
-      size: 927481
+      md5: 93ffe1538d0a041cf58ce88c3e97284e
+      size: 455142
     - path: src/modeling
       hash: md5
-      md5: 1e793285a4857a495dd759af72109edb.dir
-      size: 31641
+      md5: 520c274e32e646c6cec97b52cf490558.dir
+      size: 36290
       nfiles: 3
     params:
       params.yaml:
@@ -71,43 +71,43 @@ stages:
     outs:
     - path: models/clustering/cluster_assignments.parquet
       hash: md5
-      md5: 6433ee7900d43d023c33775b5e149b6e
-      size: 6819
+      md5: a939e840f5b23dc3b270c5981a40828d
+      size: 4882
     - path: models/clustering/clusters_summary.parquet
       hash: md5
-      md5: a29ecce381ae1b8adca704588de96e9c
-      size: 23128
+      md5: 05620444baa03b709a073f9f7ee9c7c0
+      size: 21386
     - path: models/clustering/kmeans_model.pkl
       hash: md5
-      md5: aea81f9e856aea32c44409dee770f54a
-      size: 309956
+      md5: b87051b277033329f08a1a40bc2d92bf
+      size: 308788
     - path: models/clustering/metrics.json
       hash: md5
-      md5: eaad952a754543b2e9efa28c07595e32
-      size: 262
+      md5: f1c1eb4dda6c699162a95be326f19c64
+      size: 263
     - path: models/clustering/nn_index.pkl
       hash: md5
-      md5: be221c2ee8ce5631fd518cf6803202e2
-      size: 891476
+      md5: 9e6fde31fd78106d4c1d25acad8297ff
+      size: 442963
   build_graph:
     cmd: python -m src.graph.build_graph
     deps:
     - path: config.yaml
       hash: md5
-      md5: 9323c9f25104d1bcc98fa369628926f2
-      size: 3376
+      md5: fbd8721fa86cc6bd498fda63e583ea4c
+      size: 3483
     - path: data/features/embeddings.parquet
       hash: md5
-      md5: 8a7d196c7262ec78cd314c8f16f04861
-      size: 927481
+      md5: 93ffe1538d0a041cf58ce88c3e97284e
+      size: 455142
     - path: data/processed/cleaned_articles.parquet
       hash: md5
-      md5: 8e9115979756589ef736b8e47f4e0b10
-      size: 18731061
+      md5: adb27f3ab9f2396fab5a520be50a3f7b
+      size: 7556679
     - path: models/clustering/cluster_assignments.parquet
       hash: md5
-      md5: 6433ee7900d43d023c33775b5e149b6e
-      size: 6819
+      md5: a939e840f5b23dc3b270c5981a40828d
+      size: 4882
     params:
       params.yaml:
         graph:
@@ -117,5 +117,5 @@ stages:
     outs:
     - path: data/graph/knowledge_graph.pkl
       hash: md5
-      md5: 2163455b9521652b75cbd6315a731de5
-      size: 66514
+      md5: 09743b53641de7274fa7542a954bf55b
+      size: 17273

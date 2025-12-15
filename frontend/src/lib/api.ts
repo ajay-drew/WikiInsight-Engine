@@ -234,4 +234,52 @@ export async function fetchArticleGraph(articleTitle: string): Promise<GraphVisu
   return (await resp.json()) as GraphVisualization;
 }
 
+// Pipeline API types and functions
+export type PipelineConfig = {
+  seed_queries: string[];  // 3-6 queries
+  per_query_limit: number;  // 1-70
+  max_articles: number;  // Hard cap: 1000
+};
+
+export type StageProgress = {
+  status: "pending" | "running" | "completed" | "error";
+  progress: number;  // 0-100
+  message: string;
+  eta: number | null;  // Estimated time remaining in seconds
+};
+
+export type PipelineProgress = {
+  current_stage: string | null;
+  stages: {
+    ingestion: StageProgress;
+    preprocessing: StageProgress;
+    clustering: StageProgress;
+    build_graph: StageProgress;
+  };
+  started_at: string | null;
+  updated_at: string | null;
+  overall_progress: number;  // 0-100
+};
+
+export async function startPipeline(config: PipelineConfig): Promise<{ status: string; message: string; config: PipelineConfig }> {
+  const resp = await fetch(`${API_BASE}/pipeline/start`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(config)
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to start pipeline (${resp.status}): ${text || resp.statusText}`);
+  }
+
+  return (await resp.json()) as { status: string; message: string; config: PipelineConfig };
+}
+
+export function connectPipelineProgress(): EventSource {
+  return new EventSource(`${API_BASE}/pipeline/progress`);
+}
+
 

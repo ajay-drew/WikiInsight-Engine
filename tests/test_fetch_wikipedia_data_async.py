@@ -12,16 +12,14 @@ from src.ingestion.fetch_wikipedia_data import (  # noqa: E402
     fetch_corpus_async,
     _normalize_article,
     save_articles,
-    main,
+    load_seed_queries,
+    validate_ingestion_config,
 )
-# Constants inlined (previously from src.ingestion.constants)
-SEED_QUERIES = [
+# Test seed queries (using default from config)
+TEST_SEED_QUERIES = [
     "Machine learning",
     "Artificial intelligence",
     "Data science",
-    "Physics",
-    "Biology",
-    "History",
 ]
 RAW_DATA_PATH = "data/raw/articles.json"
 
@@ -35,9 +33,10 @@ async def test_fetch_corpus_async_concurrent():
         mock_client_class.return_value = mock_client
         
         # Mock search results
+        test_queries = TEST_SEED_QUERIES
         mock_search_results = [
             [{"title": f"Article{i}", "snippet": f"Snippet{i}"} for i in range(5)]
-            for _ in SEED_QUERIES
+            for _ in test_queries
         ]
         
         # Mock article fetching
@@ -54,7 +53,7 @@ async def test_fetch_corpus_async_concurrent():
         
         async def mock_search(query, limit):
             # Return appropriate mock results
-            idx = SEED_QUERIES.index(query)
+            idx = test_queries.index(query) if query in test_queries else 0
             return mock_search_results[idx]
         
         async def mock_get_batch(titles, **kwargs):
@@ -64,12 +63,16 @@ async def test_fetch_corpus_async_concurrent():
         mock_client.get_articles_batch = AsyncMock(side_effect=mock_get_batch)
         mock_client.executor.shutdown = MagicMock()
         
-        # Run fetch
-        articles = await fetch_corpus_async(max_articles=10, per_query_limit=5)
+        # Run fetch with test queries
+        articles = await fetch_corpus_async(
+            max_articles=10, 
+            per_query_limit=5,
+            seed_queries=test_queries
+        )
         
         # Verify concurrent execution
         assert len(articles) <= 10
-        assert mock_client.search_articles.call_count == len(SEED_QUERIES)
+        assert mock_client.search_articles.call_count == len(test_queries)
         # Should call get_articles_batch once with all titles (concurrent)
         assert mock_client.get_articles_batch.call_count == 1
 
@@ -81,9 +84,10 @@ async def test_fetch_corpus_async_respects_max_articles():
         mock_client = MagicMock()
         mock_client_class.return_value = mock_client
         
+        test_queries = TEST_SEED_QUERIES
         mock_search_results = [
             [{"title": f"Article{i}", "snippet": f"Snippet{i}"} for i in range(20)]
-            for _ in SEED_QUERIES
+            for _ in test_queries
         ]
         
         mock_articles = [
@@ -98,7 +102,7 @@ async def test_fetch_corpus_async_respects_max_articles():
         ]
         
         async def mock_search(query, limit):
-            idx = SEED_QUERIES.index(query)
+            idx = test_queries.index(query) if query in test_queries else 0
             return mock_search_results[idx]
         
         async def mock_get_batch(titles, **kwargs):
@@ -108,7 +112,11 @@ async def test_fetch_corpus_async_respects_max_articles():
         mock_client.get_articles_batch = AsyncMock(side_effect=mock_get_batch)
         mock_client.executor.shutdown = MagicMock()
         
-        articles = await fetch_corpus_async(max_articles=15, per_query_limit=20)
+        articles = await fetch_corpus_async(
+            max_articles=15, 
+            per_query_limit=20,
+            seed_queries=test_queries
+        )
         
         assert len(articles) <= 15
 
