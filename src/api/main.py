@@ -166,66 +166,96 @@ async def _load_all_data() -> None:
         # Only load file-based search if database search is not available (to avoid loading both)
         # But if database search failed, we need file-based as fallback
         if (_db_search_engine is None) and os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
-            # Load articles
-            logger.info("Loading cleaned articles from %s...", CLEANED_ARTICLES_PATH)
-            articles_load_start = perf_counter()
-            cleaned_df = pd.read_parquet(CLEANED_ARTICLES_PATH)
-            articles_load_time = perf_counter() - articles_load_start
-            logger.info("Loaded %d articles in %.2f seconds", len(cleaned_df), articles_load_time)
-            _cleaned_articles_df = cleaned_df
-            articles = [
-                {
-                    "title": row["title"],
-                    "text": row.get("cleaned_text", row.get("raw_text", "")),
-                }
-                for _, row in tqdm(cleaned_df.iterrows(), total=len(cleaned_df), desc="Preparing articles", unit="article")
-            ]
+            try:
+                # Load articles
+                logger.info("Loading cleaned articles from %s...", CLEANED_ARTICLES_PATH)
+                articles_load_start = perf_counter()
+                cleaned_df = pd.read_parquet(CLEANED_ARTICLES_PATH)
+                articles_load_time = perf_counter() - articles_load_start
+                logger.info("Loaded %d articles in %.2f seconds", len(cleaned_df), articles_load_time)
+                
+                if cleaned_df.empty:
+                    raise ValueError("Cleaned articles DataFrame is empty")
+                
+                _cleaned_articles_df = cleaned_df
+                articles = [
+                    {
+                        "title": row["title"],
+                        "text": row.get("cleaned_text", row.get("raw_text", "")),
+                    }
+                    for _, row in tqdm(cleaned_df.iterrows(), total=len(cleaned_df), desc="Preparing articles", unit="article")
+                ]
+                
+                if len(articles) == 0:
+                    raise ValueError("No articles found after processing DataFrame")
 
-            # Load embeddings
-            logger.info("Loading embeddings from %s...", EMBEDDINGS_PATH)
-            embeddings_load_start = perf_counter()
-            emb_df = pd.read_parquet(EMBEDDINGS_PATH)
-            embeddings_load_time = perf_counter() - embeddings_load_start
-            logger.info("Loaded embeddings DataFrame in %.2f seconds", embeddings_load_time)
-            
-            logger.info("Stacking embeddings into numpy array...")
-            stack_start = perf_counter()
-            embeddings = np.vstack(emb_df["embedding"].to_list())
-            stack_time = perf_counter() - stack_start
-            logger.info("Stacked embeddings in %.2f seconds (shape: %s)", stack_time, embeddings.shape)
+                # Load embeddings
+                logger.info("Loading embeddings from %s...", EMBEDDINGS_PATH)
+                embeddings_load_start = perf_counter()
+                emb_df = pd.read_parquet(EMBEDDINGS_PATH)
+                embeddings_load_time = perf_counter() - embeddings_load_start
+                logger.info("Loaded embeddings DataFrame in %.2f seconds", embeddings_load_time)
+                
+                if emb_df.empty:
+                    raise ValueError("Embeddings DataFrame is empty")
+                
+                if "embedding" not in emb_df.columns:
+                    raise ValueError(f"Embeddings DataFrame missing 'embedding' column. Columns: {list(emb_df.columns)}")
+                
+                logger.info("Stacking embeddings into numpy array...")
+                stack_start = perf_counter()
+                embedding_list = emb_df["embedding"].to_list()
+                if len(embedding_list) == 0:
+                    raise ValueError("Embedding list is empty")
+                embeddings = np.vstack(embedding_list)
+                stack_time = perf_counter() - stack_start
+                logger.info("Stacked embeddings in %.2f seconds (shape: %s)", stack_time, embeddings.shape)
+                
+                if len(articles) != embeddings.shape[0]:
+                    raise ValueError(f"Article count ({len(articles)}) doesn't match embedding count ({embeddings.shape[0]})")
+            except Exception as load_exc:  # noqa: BLE001
+                logger.exception("Failed to load articles or embeddings: %s", load_exc)
+                raise  # Re-raise to be caught by outer exception handler
 
             # Load embedding model and search configuration
-            logger.info("Loading embedding model...")
-            model_load_start = perf_counter()
-            config = yaml.safe_load(open(CONFIG_PATH, "r"))
-            model_name = config.get("preprocessing", {}).get("embeddings", {}).get(
-                "model",
-                "all-MiniLM-L6-v2",
-            )
-            bm25_cfg = config.get("search", {}).get("bm25", {}) if isinstance(config, dict) else {}
-            title_weight = float(bm25_cfg.get("title_weight", 2.0))
-            body_weight = float(bm25_cfg.get("body_weight", 1.0))
-            use_nltk_normalization = bool(bm25_cfg.get("use_nltk_normalization", True))
-            from src.preprocessing.embeddings import EmbeddingGenerator
-            embedding_model = EmbeddingGenerator(model_name=model_name)
-            model_load_time = perf_counter() - model_load_start
-            logger.info("Embedding model loaded in %.2f seconds", model_load_time)
+            try:
+                logger.info("Loading embedding model...")
+                model_load_start = perf_counter()
+                config = yaml.safe_load(open(CONFIG_PATH, "r"))
+                model_name = config.get("preprocessing", {}).get("embeddings", {}).get(
+                    "model",
+                    "all-MiniLM-L6-v2",
+                )
+                bm25_cfg = config.get("search", {}).get("bm25", {}) if isinstance(config, dict) else {}
+                title_weight = float(bm25_cfg.get("title_weight", 2.0))
+                body_weight = float(bm25_cfg.get("body_weight", 1.0))
+                use_nltk_normalization = bool(bm25_cfg.get("use_nltk_normalization", True))
+                from src.preprocessing.embeddings import EmbeddingGenerator
+                embedding_model = EmbeddingGenerator(model_name=model_name)
+                model_load_time = perf_counter() - model_load_start
+                logger.info("Embedding model loaded in %.2f seconds", model_load_time)
 
-            logger.info("Initializing HybridSearchEngine...")
-            engine_init_start = perf_counter()
-            _search_engine = HybridSearchEngine(
-                articles=articles,
-                embeddings=embeddings,
-                model=embedding_model.model,
-                use_nltk_normalization=use_nltk_normalization,
-                title_weight=title_weight,
-                body_weight=body_weight,
-            )
-            engine_init_time = perf_counter() - engine_init_start
-            search_engine_time = perf_counter() - search_engine_start
-            logger.info("HybridSearchEngine initialized in %.2f seconds (total: %.2f seconds)", 
-                       engine_init_time, search_engine_time)
-            logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
+                logger.info("Initializing HybridSearchEngine with %d articles and embeddings shape %s...", 
+                           len(articles), embeddings.shape)
+                engine_init_start = perf_counter()
+                _search_engine = HybridSearchEngine(
+                    articles=articles,
+                    embeddings=embeddings,
+                    model=embedding_model.model,
+                    use_nltk_normalization=use_nltk_normalization,
+                    title_weight=title_weight,
+                    body_weight=body_weight,
+                )
+                engine_init_time = perf_counter() - engine_init_start
+                search_engine_time = perf_counter() - search_engine_start
+                logger.info("HybridSearchEngine initialized in %.2f seconds (total: %.2f seconds)", 
+                           engine_init_time, search_engine_time)
+                logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
+            except Exception as init_exc:  # noqa: BLE001
+                logger.exception("Failed during search engine initialization: %s", init_exc)
+                _search_engine = None
+                _cleaned_articles_df = None
+                raise  # Re-raise to be caught by outer exception handler
             # #region agent log
             try:
                 with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
@@ -244,6 +274,9 @@ async def _load_all_data() -> None:
     except Exception as exc:  # noqa: BLE001
         search_engine_time = perf_counter() - search_engine_start
         logger.exception("Failed to load HybridSearchEngine (%.2f seconds): %s", search_engine_time, exc)
+        logger.error("Search engine loading failed. Error type: %s, Error message: %s", type(exc).__name__, str(exc))
+        import traceback
+        logger.error("Full traceback:\n%s", traceback.format_exc())
         _search_engine = None
         _cleaned_articles_df = None
 
@@ -321,21 +354,16 @@ def _clear_all_data() -> None:
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
     global _topic_index, _search_engine, _db_search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
-    # Startup - Try to load data automatically if files exist
-    # This allows the API to work immediately after pipeline completes without needing to call /api/pipeline/reload
-    logger.info("API started. Attempting to load data if available...")
-    try:
-        await _load_all_data()
-        logger.info("Data loaded successfully on startup.")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to load data on startup (this is OK if pipeline hasn't run yet): %s", exc)
-        # Initialize to None if loading fails
-        _topic_index = None
-        _search_engine = None
-        _db_search_engine = None
-        _graph_service = None
-        _wikidata_linker = None
-        _cleaned_articles_df = None
+    # Startup - DO NOT load data automatically
+    # Search engine should only load AFTER pipeline completes, not before or during
+    logger.info("API started. Search engine will load after pipeline completes.")
+    # Initialize all to None - data will be loaded only after pipeline completes
+    _topic_index = None
+    _search_engine = None
+    _db_search_engine = None
+    _graph_service = None
+    _wikidata_linker = None
+    _cleaned_articles_df = None
 
     yield
     # Shutdown (if needed) - handle errors gracefully
@@ -861,9 +889,17 @@ async def api_search(request: Request, body: SearchRequest):
                 detail=f"Search engine is not available. Missing required files: {', '.join(missing_files)}. Run the data pipeline first to generate these files.",
             )
         else:
+            # Files exist but search engine failed to load - suggest reloading
+            error_detail = (
+                "Search engine is not available. Files exist but search engine failed to load. "
+                "This usually means there was an error during initialization. "
+                "Please check the server logs for detailed error information, or try reloading data via POST /api/pipeline/reload endpoint."
+            )
+            logger.error("Search engine unavailable. State: db_search=%s, file_search=%s, embeddings_exist=%s, articles_exist=%s", 
+                        _db_search_engine is not None, _search_engine is not None, embeddings_exists, articles_exists)
             raise HTTPException(
                 status_code=503,
-                detail="Search engine is not available. Files exist but search engine failed to load. Check server logs for details. Try reloading data via /api/pipeline/reload endpoint.",
+                detail=error_detail,
             )
 
     try:
@@ -1317,6 +1353,92 @@ async def stream_pipeline_progress(request: Request):
             "X-Accel-Buffering": "no",  # Disable nginx buffering
         },
     )
+
+
+@app.get("/api/pipeline/logs")
+@limiter.limit("60/minute")
+async def get_pipeline_logs(request: Request, run_id: Optional[str] = None):
+    """
+    Get pipeline logs from SQLite database.
+    
+    Args:
+        run_id: Optional run ID. If not provided, returns logs for current run.
+        
+    Returns:
+        List of log entries for the specified run
+    """
+    from src.common.pipeline_logs_db import (
+        get_run_logs,
+        get_current_run,
+        get_run_info,
+        get_all_runs,
+    )
+    
+    try:
+        if run_id is None:
+            run_id = get_current_run()
+            if run_id is None:
+                # Return all runs if no current run
+                runs = get_all_runs()
+                return {
+                    "runs": runs,
+                    "logs": [],
+                    "current_run_id": None,
+                }
+        
+        logs = get_run_logs(run_id, limit=5000)
+        run_info = get_run_info(run_id)
+        
+        return {
+            "run_id": run_id,
+            "run_info": run_info,
+            "logs": logs,
+            "log_count": len(logs),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to get pipeline logs: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve logs: {str(exc)}")
+
+
+@app.get("/api/pipeline/runs")
+@limiter.limit("60/minute")
+async def get_pipeline_runs(request: Request):
+    """Get all pipeline runs."""
+    from src.common.pipeline_logs_db import get_all_runs
+    
+    try:
+        runs = get_all_runs()
+        return {"runs": runs, "count": len(runs)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to get pipeline runs: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve runs: {str(exc)}")
+
+
+@app.delete("/api/pipeline/logs")
+@limiter.limit("10/minute")
+async def delete_pipeline_logs(request: Request, run_id: Optional[str] = None):
+    """
+    Delete pipeline logs.
+    
+    Args:
+        run_id: Optional run ID. If not provided, deletes all runs (called on webpage reload).
+        
+    Returns:
+        Success message
+    """
+    from src.common.pipeline_logs_db import delete_run, delete_all_runs
+    
+    try:
+        if run_id:
+            delete_run(run_id)
+            return {"message": f"Deleted pipeline run: {run_id}"}
+        else:
+            # Delete all runs (webpage reload)
+            delete_all_runs()
+            return {"message": "Deleted all pipeline logs (webpage reload)"}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to delete pipeline logs: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to delete logs: {str(exc)}")
 
 
 # Serve static frontend files - MUST be at the end after all API routes

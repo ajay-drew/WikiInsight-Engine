@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from typing import Optional
 
 from src.common.pipeline_progress import (
@@ -22,8 +23,20 @@ from src.common.pipeline_progress import (
     mark_stage_completed,
     update_progress,
 )
+from src.common.pipeline_logs_db import (
+    create_run,
+    update_run_status,
+    add_log,
+    get_current_run,
+    delete_all_runs,
+    DatabaseLogHandler,
+)
 
 logger = logging.getLogger(__name__)
+
+# Current pipeline run ID and database log handler
+_current_run_id: Optional[str] = None
+_db_log_handler: Optional[DatabaseLogHandler] = None
 
 
 def run_stage(stage_name: str, module_path: str, args: Optional[list] = None) -> bool:
@@ -90,6 +103,10 @@ def run_stage(stage_name: str, module_path: str, args: Optional[list] = None) ->
                 # Log INFO level lines, but filter out very verbose output
                 if line and not line.startswith('DEBUG:'):
                     logger.info("[%s subprocess] %s", stage_name, line)
+                    # Also log to database
+                    if _current_run_id:
+                        log_level = "DEBUG" if line.startswith("DEBUG:") else "INFO"
+                        add_log(_current_run_id, log_level, line, stage_name)
         
         # Wait for process to complete
         returncode = process.wait()
@@ -99,12 +116,18 @@ def run_stage(stage_name: str, module_path: str, args: Optional[list] = None) ->
         full_output = '\n'.join(output_lines)
         
         if returncode == 0:
+            success_msg = f"Stage {stage_name} completed successfully in {stage_time:.2f} seconds ({stage_time / 60:.1f} minutes)"
             logger.info("=" * 80)
-            logger.info("Stage %s completed successfully in %.2f seconds (%.1f minutes)",
-                       stage_name, stage_time, stage_time / 60)
+            logger.info(success_msg)
             logger.info("Subprocess PID: %d", process.pid)
             logger.info("Output lines captured: %d", len(output_lines))
             logger.info("=" * 80)
+            
+            # Log to database
+            if _current_run_id:
+                add_log(_current_run_id, "INFO", success_msg, stage_name)
+                add_log(_current_run_id, "INFO", f"Subprocess PID: {process.pid}", stage_name)
+                add_log(_current_run_id, "INFO", f"Output lines captured: {len(output_lines)}", stage_name)
             
             if len(output_lines) > 20:
                 logger.debug("Last 20 lines of subprocess output:")
@@ -120,6 +143,17 @@ def run_stage(stage_name: str, module_path: str, args: Optional[list] = None) ->
             logger.error("Subprocess PID: %d", process.pid)
             logger.error("Output lines captured: %d", len(output_lines))
             logger.error("=" * 80)
+            
+            # Log to database
+            if _current_run_id:
+                add_log(_current_run_id, "ERROR", error_msg, stage_name)
+                add_log(_current_run_id, "ERROR", f"Subprocess PID: {process.pid}", stage_name)
+                add_log(_current_run_id, "ERROR", f"Output lines captured: {len(output_lines)}", stage_name)
+                if output_lines:
+                    add_log(_current_run_id, "ERROR", "Subprocess output (last 50 lines):", stage_name)
+                    for line in output_lines[-50:]:
+                        add_log(_current_run_id, "ERROR", f"  {line}", stage_name)
+                update_run_status(_current_run_id, "error", stage_name)
             
             if output_lines:
                 logger.error("Subprocess output (last 50 lines):")
@@ -138,6 +172,14 @@ def run_stage(stage_name: str, module_path: str, args: Optional[list] = None) ->
         logger.exception("=" * 80)
         logger.exception(error_msg)
         logger.exception("=" * 80)
+        
+        # Log to database
+        if _current_run_id:
+            add_log(_current_run_id, "ERROR", error_msg, stage_name)
+            import traceback
+            add_log(_current_run_id, "ERROR", f"Exception traceback:\n{traceback.format_exc()}", stage_name)
+            update_run_status(_current_run_id, "error", stage_name)
+        
         mark_stage_error(stage_name, error_msg)
         return False
 
@@ -152,9 +194,24 @@ def run_full_pipeline() -> bool:
     from time import perf_counter, sleep
     from tqdm import tqdm
     
+    global _current_run_id, _db_log_handler
+    
+    # Create a new pipeline run
+    _current_run_id = str(uuid.uuid4())
+    create_run(_current_run_id)
+    add_log(_current_run_id, "INFO", "Starting full pipeline orchestration")
+    
+    # Add database log handler to root logger to capture all pipeline logs
+    if _db_log_handler is None:
+        _db_log_handler = DatabaseLogHandler(_current_run_id)
+        logging.getLogger().addHandler(_db_log_handler)
+    else:
+        _db_log_handler.run_id = _current_run_id
+    
     pipeline_start = perf_counter()
     logger.info("=" * 80)
     logger.info("Starting full pipeline orchestration")
+    logger.info("Pipeline Run ID: %s", _current_run_id)
     logger.info("=" * 80)
     logger.info("Note: When running via DVC (dvc repro), subprocess output will be logged here")
     logger.info("Each stage runs as a subprocess with real-time output streaming")
@@ -218,6 +275,24 @@ def run_full_pipeline() -> bool:
     
     logger.info("")
     
+    # Log GPU info to database
+    if _current_run_id:
+        try:
+            from src.common.gpu_utils import verify_gpu_usage
+            from src.preprocessing.embeddings import detect_device
+            from src.common.gpu_utils import get_clustering_backend
+            
+            gpu_verification = verify_gpu_usage()
+            embedding_device = detect_device("auto")
+            clustering_backend = get_clustering_backend()
+            
+            add_log(_current_run_id, "INFO", f"GPU Status - PyTorch CUDA: {gpu_verification['pytorch_cuda']}")
+            add_log(_current_run_id, "INFO", f"GPU Status - CuPy CUDA: {gpu_verification['cupy_cuda']}")
+            add_log(_current_run_id, "INFO", f"Embeddings will use: {embedding_device.upper()}")
+            add_log(_current_run_id, "INFO", f"Clustering backend: {clustering_backend.upper()}")
+        except Exception:
+            pass
+    
     stages = [
         ("ingestion", "src.ingestion.fetch_wikipedia_data", None),
         ("preprocessing", "src.preprocessing.process_data", None),
@@ -237,17 +312,28 @@ def run_full_pipeline() -> bool:
         
         if not success:
             total_time = perf_counter() - pipeline_start
+            error_msg = f"Pipeline stopped at stage: {stage_name} (after {total_time:.2f} seconds total)"
             logger.error("=" * 80)
-            logger.error("Pipeline stopped at stage: %s (after %.2f seconds total)", stage_name, total_time)
+            logger.error(error_msg)
             logger.error("Stage times:")
             for name, time_taken in stage_times.items():
                 logger.error("  - %s: %.2f seconds", name, time_taken)
             logger.error("=" * 80)
+            
+            # Log to database
+            if _current_run_id:
+                add_log(_current_run_id, "ERROR", error_msg)
+                add_log(_current_run_id, "ERROR", "Stage times:")
+                for name, time_taken in stage_times.items():
+                    add_log(_current_run_id, "ERROR", f"  - {name}: {time_taken:.2f} seconds")
+                update_run_status(_current_run_id, "error", stage_name)
+            
             return False
         
         sleep(1)
     
     total_time = perf_counter() - pipeline_start
+    success_msg = f"Full pipeline completed successfully! Total time: {total_time:.2f} seconds ({total_time / 60:.1f} minutes)"
     logger.info("=" * 80)
     logger.info("Full pipeline completed successfully!")
     logger.info("Total pipeline time: %.2f seconds (%.1f minutes)", total_time, total_time / 60)
@@ -256,6 +342,15 @@ def run_full_pipeline() -> bool:
         percentage = (time_taken / total_time * 100) if total_time > 0 else 0
         logger.info("  - %s: %.2f seconds (%.1f%%)", stage_name, time_taken, percentage)
     logger.info("=" * 80)
+    
+    # Log to database
+    if _current_run_id:
+        add_log(_current_run_id, "INFO", success_msg)
+        add_log(_current_run_id, "INFO", "Stage breakdown:")
+        for stage_name, time_taken in stage_times.items():
+            percentage = (time_taken / total_time * 100) if total_time > 0 else 0
+            add_log(_current_run_id, "INFO", f"  - {stage_name}: {time_taken:.2f} seconds ({percentage:.1f}%)")
+        update_run_status(_current_run_id, "completed", None)
 
     api_base = os.environ.get("API_BASE_URL", "http://127.0.0.1:9000")
     reload_on_complete = os.environ.get("RELOAD_ON_COMPLETE", "true").lower() in {"true", "1", "yes"}

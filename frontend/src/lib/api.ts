@@ -282,4 +282,61 @@ export function connectPipelineProgress(): EventSource {
   return new EventSource(`${API_BASE}/pipeline/progress`);
 }
 
+// Pipeline logs API types and functions
+export type PipelineLogEntry = {
+  stage_name: string | null;
+  log_level: string;
+  message: string;
+  timestamp: string;
+};
+
+export type PipelineRun = {
+  run_id: string;
+  started_at: string;
+  status: string;
+  current_stage: string | null;
+};
+
+export type PipelineLogsResponse = {
+  run_id: string;
+  run_info: PipelineRun | null;
+  logs: PipelineLogEntry[];
+  log_count: number;
+};
+
+export async function getPipelineLogs(runId?: string): Promise<PipelineLogsResponse> {
+  const url = runId 
+    ? `${API_BASE}/pipeline/logs?run_id=${encodeURIComponent(runId)}`
+    : `${API_BASE}/pipeline/logs`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to get pipeline logs (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as PipelineLogsResponse;
+}
+
+export async function getPipelineRuns(): Promise<{ runs: PipelineRun[]; count: number }> {
+  const resp = await fetch(`${API_BASE}/pipeline/runs`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to get pipeline runs (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as { runs: PipelineRun[]; count: number };
+}
+
+export async function deletePipelineLogs(runId?: string): Promise<{ message: string }> {
+  const url = runId
+    ? `${API_BASE}/pipeline/logs?run_id=${encodeURIComponent(runId)}`
+    : `${API_BASE}/pipeline/logs`;
+  const resp = await fetch(url, {
+    method: "DELETE",
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to delete pipeline logs (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as { message: string };
+}
+
 

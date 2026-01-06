@@ -70,7 +70,7 @@ def validate_ingestion_config(
     Args:
         queries: List of seed queries
         per_query_limit: Maximum articles per query (1-70)
-        max_articles: Maximum total articles (hard cap: 1000)
+        max_articles: Maximum total articles (hard cap: 1000, minimum: 50)
 
     Raises:
         ValueError: If configuration is invalid
@@ -80,6 +80,12 @@ def validate_ingestion_config(
 
     if per_query_limit < 1 or per_query_limit > 70:
         raise ValueError(f"per_query_limit must be between 1 and 70, got {per_query_limit}")
+
+    if max_articles < 50:
+        raise ValueError(
+            f"max_articles must be at least 50 for meaningful clustering, got {max_articles}. "
+            "Please increase max_articles to at least 50 or adjust your seed queries/per_query_limit."
+        )
 
     if max_articles > 1000:
         raise ValueError(f"max_articles cannot exceed 1000, got {max_articles}")

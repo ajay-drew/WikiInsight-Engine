@@ -369,7 +369,7 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
     Uses GPU (PyTorch/CuPy) if available and use_gpu=True, otherwise falls back to CPU (sklearn).
     """
     method = (cfg.get("method") or "kmeans").lower()
-    n_clusters = int(cfg.get("n_clusters", 100))
+    requested_clusters = int(cfg.get("n_clusters", 100))
     random_state = int(cfg.get("random_state", 42))
     
     backend = get_clustering_backend()
@@ -380,6 +380,21 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
     n_samples = embeddings.shape[0]
     gpu_threshold = 2000  # Only use GPU for datasets with 2000+ samples
     
+    # Clamp n_clusters to available samples to avoid ValueError
+    # KMeans requires n_samples >= n_clusters
+    if n_samples < requested_clusters:
+        n_clusters = max(1, n_samples)
+        logger.warning("=" * 80)
+        logger.warning("CLUSTERING CONFIGURATION ADJUSTMENT:")
+        logger.warning("  - Requested clusters: %d", requested_clusters)
+        logger.warning("  - Available samples: %d", n_samples)
+        logger.warning("  - Adjusted clusters: %d (clamped to available samples)", n_clusters)
+        logger.warning("  - Reason: KMeans requires n_samples >= n_clusters")
+        logger.warning("  - Recommendation: Reduce n_clusters in config.yaml or increase max_articles")
+        logger.warning("=" * 80)
+    else:
+        n_clusters = requested_clusters
+    
     use_gpu_clustering = use_gpu and backend == "pytorch" and n_samples >= gpu_threshold
     
     if use_gpu and backend == "pytorch" and n_samples < gpu_threshold:
@@ -388,7 +403,8 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
     
     logger.info("Clustering configuration:")
     logger.info("  - Method: %s", method)
-    logger.info("  - N clusters: %d", n_clusters)
+    logger.info("  - Requested clusters: %d", requested_clusters)
+    logger.info("  - Actual clusters: %d", n_clusters)
     logger.info("  - N samples: %d", n_samples)
     logger.info("  - Random state: %d", random_state)
     logger.info("  - GPU requested: %s", use_gpu)
@@ -861,7 +877,11 @@ def main() -> None:
             10.0,
             f"Fitting clustering model on {device_str}...",
         )
+        # Store requested n_clusters before make_clusterer potentially adjusts it
+        requested_n_clusters = int(model_cfg.get("n_clusters", 100))
         model, labels = make_clusterer(embeddings, model_cfg, use_gpu=use_gpu)
+        # Get actual n_clusters from the model (may differ from requested if clamped)
+        actual_n_clusters = len(np.unique(labels))
         
         update_progress("clustering", "running", 50.0, "Building nearest-neighbor index...")
 
@@ -909,7 +929,6 @@ def main() -> None:
             # Sample for large datasets to avoid memory issues
             sample_size = min(5000, len(embeddings))
             if sample_size < len(embeddings):
-                import numpy as np
                 indices = np.random.choice(len(embeddings), sample_size, replace=False)
                 sample_embeddings = embeddings[indices]
                 sample_labels = labels[indices]
@@ -928,7 +947,6 @@ def main() -> None:
             # Sample for large datasets
             sample_size = min(5000, len(embeddings))
             if sample_size < len(embeddings):
-                import numpy as np
                 indices = np.random.choice(len(embeddings), sample_size, replace=False)
                 sample_embeddings = embeddings[indices]
                 sample_labels = labels[indices]
@@ -964,6 +982,13 @@ def main() -> None:
                 # Log parameters
                 log_params_safely(model_cfg, prefix="clustering")
                 log_params_safely(nn_cfg, prefix="neighbors")
+                
+                # Log actual vs requested clusters if they differ
+                if actual_n_clusters != requested_n_clusters:
+                    log_params_safely({
+                        "clustering.n_clusters_requested": requested_n_clusters,
+                        "clustering.n_clusters_actual": actual_n_clusters,
+                    })
                 
                 # Log metrics
                 log_metrics_safely(metrics)

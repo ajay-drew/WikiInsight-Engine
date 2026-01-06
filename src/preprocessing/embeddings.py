@@ -14,6 +14,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Avoid optional torchvision dependency in transformers (breaks on Windows when ops are missing)
+os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+os.environ.setdefault("DISABLE_TRANSFORMERS_IMAGE_TRANSFORMS", "1")
+
 # Track import status
 _import_error: Optional[str] = None
 SentenceTransformer = None
@@ -24,6 +28,23 @@ try:
 except (ImportError, OSError) as e:
     _import_error = str(e)
     logger.warning("Failed to import sentence_transformers: %s", e)
+
+
+def _ensure_sentence_transformers_loaded() -> None:
+    """Retry importing sentence-transformers after adjusting env flags."""
+    global SentenceTransformer, _import_error
+    if SentenceTransformer is not None:
+        return
+    try:
+        os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+        os.environ.setdefault("DISABLE_TRANSFORMERS_IMAGE_TRANSFORMS", "1")
+        from sentence_transformers import SentenceTransformer as _SentenceTransformer
+
+        SentenceTransformer = _SentenceTransformer
+        _import_error = None
+    except (ImportError, OSError, Exception) as err:  # noqa: BLE001
+        _import_error = str(err)
+        logger.warning("Failed to import sentence_transformers on retry: %s", err)
 
 
 def detect_device(preferred: Optional[str] = None) -> str:
@@ -132,6 +153,7 @@ class EmbeddingGenerator:
             model_name: Sentence transformer model name
             device: Device to use ('auto', 'cuda', 'cpu', or None for auto)
         """
+        _ensure_sentence_transformers_loaded()
         if SentenceTransformer is None:
             error_msg = (
                 "sentence-transformers is not installed or failed to import. "

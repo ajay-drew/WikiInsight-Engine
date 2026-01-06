@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { connectPipelineProgress, PipelineConfig, PipelineProgress, startPipeline } from "../lib/api";
+import { connectPipelineProgress, PipelineConfig, PipelineProgress, startPipeline, getPipelineLogs, deletePipelineLogs, PipelineLogEntry } from "../lib/api";
 
 export function IngestionPage() {
   const [queries, setQueries] = useState<string[]>(["Machine learning", "Artificial intelligence", "Data science"]);
@@ -9,19 +9,49 @@ export function IngestionPage() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
+  const [logs, setLogs] = useState<PipelineLogEntry[]>([]);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
   // Calculate total potential articles
   const totalPotential = queries.length * perQueryLimit;
   const actualMax = Math.min(totalPotential, maxArticles);
 
   useEffect(() => {
+    // Delete all logs on page load (webpage reload)
+    deletePipelineLogs().catch(() => {
+      // Ignore errors - logs might not exist yet
+    });
+    
     // Cleanup on unmount
     return () => {
       if (eventSource) {
         eventSource.close();
       }
     };
-  }, [eventSource]);
+  }, []); // Only run on mount
+
+  // Poll for logs while pipeline is running
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const pollLogs = async () => {
+      try {
+        const logsResponse = await getPipelineLogs();
+        if (logsResponse.run_id) {
+          setCurrentRunId(logsResponse.run_id);
+          setLogs(logsResponse.logs);
+        }
+      } catch (err) {
+        console.debug("Failed to fetch logs:", err);
+      }
+    };
+
+    // Poll immediately and then every 2 seconds
+    pollLogs();
+    const interval = setInterval(pollLogs, 2000);
+
+    return () => clearInterval(interval);
+  }, [isRunning]);
 
   function handleAddQuery() {
     if (queries.length < 6) {
@@ -51,6 +81,9 @@ export function IngestionPage() {
     if (perQueryLimit < 1 || perQueryLimit > 70) {
       return "Per-query limit must be between 1 and 70";
     }
+    if (maxArticles < 50) {
+      return "Max articles must be at least 50 for meaningful clustering. Please increase max articles or adjust your seed queries/per-query limit.";
+    }
     if (totalPotential > maxArticles) {
       return `Total potential articles (${totalPotential}) exceeds max (${maxArticles}). System will cap at ${maxArticles}.`;
     }
@@ -79,10 +112,22 @@ export function IngestionPage() {
       const es = connectPipelineProgress();
       setEventSource(es);
 
-      es.onmessage = (event) => {
+      es.onmessage = async (event) => {
         try {
           const progressData = JSON.parse(event.data) as PipelineProgress;
           setProgress(progressData);
+
+          // Fetch logs from database
+          try {
+            const logsResponse = await getPipelineLogs();
+            if (logsResponse.run_id) {
+              setCurrentRunId(logsResponse.run_id);
+              setLogs(logsResponse.logs);
+            }
+          } catch (logErr) {
+            // Ignore log fetch errors
+            console.debug("Failed to fetch logs:", logErr);
+          }
 
           // Check if pipeline is complete
           const stages = progressData.stages;
@@ -93,6 +138,15 @@ export function IngestionPage() {
             setIsRunning(false);
             es.close();
             setEventSource(null);
+            // Final log fetch
+            try {
+              const logsResponse = await getPipelineLogs();
+              if (logsResponse.run_id) {
+                setLogs(logsResponse.logs);
+              }
+            } catch (logErr) {
+              console.debug("Failed to fetch final logs:", logErr);
+            }
           }
         } catch (err) {
           console.error("Failed to parse progress:", err);
@@ -317,6 +371,52 @@ export function IngestionPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Pipeline Logs Section */}
+      {(isRunning || logs.length > 0) && (
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">Pipeline Logs</h2>
+            {currentRunId && (
+              <span className="text-xs text-slate-400 font-mono">Run ID: {currentRunId.substring(0, 8)}...</span>
+            )}
+          </div>
+          <div className="border border-slate-800 rounded-lg bg-slate-900/70 p-4 max-h-[400px] overflow-auto">
+            {logs.length === 0 ? (
+              <p className="text-sm text-slate-400">No logs available yet...</p>
+            ) : (
+              <div className="space-y-1 font-mono text-xs">
+                {logs.map((log, idx) => (
+                  <div
+                    key={idx}
+                    className={`${
+                      log.log_level === "ERROR"
+                        ? "text-red-400"
+                        : log.log_level === "WARNING"
+                        ? "text-yellow-400"
+                        : log.log_level === "DEBUG"
+                        ? "text-slate-500"
+                        : "text-slate-300"
+                    }`}
+                  >
+                    <span className="text-slate-500">
+                      [{new Date(log.timestamp).toLocaleTimeString()}]
+                    </span>
+                    {log.stage_name && (
+                      <span className="text-sky-400 ml-2">[{log.stage_name}]</span>
+                    )}
+                    <span className={`ml-2 ${
+                      log.log_level === "ERROR" ? "font-bold" : ""
+                    }`}>
+                      {log.message}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
       )}
     </div>
   );

@@ -7,12 +7,12 @@ if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=5173"
 echo Starting services...
 
 REM Start backend
-if exist "venv\Scripts\activate.bat" (
-    start "API" cmd /k "cd /d %~dp0 && call venv\Scripts\activate.bat && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
-) else if exist ".venv\Scripts\activate.bat" (
-    start "API" cmd /k "cd /d %~dp0 && call .venv\Scripts\activate.bat && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
+if exist "venv\Scripts\python.exe" (
+    start "API" cmd /k "cd /d %~dp0 && venv\Scripts\python.exe -m uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
+) else if exist ".venv\Scripts\python.exe" (
+    start "API" cmd /k "cd /d %~dp0 && .venv\Scripts\python.exe -m uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
 ) else (
-    start "API" cmd /k "cd /d %~dp0 && uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
+    start "API" cmd /k "cd /d %~dp0 && python -m uvicorn src.api.main:app --host 127.0.0.1 --port %API_PORT% --reload"
 )
 
 timeout /t 2 /nobreak >nul
