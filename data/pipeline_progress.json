@@ -1,0 +1,32 @@
+{
+  "current_stage": "preprocessing",
+  "stages": {
+    "ingestion": {
+      "status": "completed",
+      "progress": 100.0,
+      "message": "Ingestion completed successfully in 44.6s",
+      "eta": null
+    },
+    "preprocessing": {
+      "status": "completed",
+      "progress": 100.0,
+      "message": "Preprocessing complete in 190.2s",
+      "eta": null
+    },
+    "clustering": {
+      "status": "pending",
+      "progress": 0.0,
+      "message": "",
+      "eta": null
+    },
+    "build_graph": {
+      "status": "pending",
+      "progress": 0.0,
+      "message": "",
+      "eta": null
+    }
+  },
+  "started_at": "2026-01-06T10:36:40.374690",
+  "updated_at": "2026-01-06T10:40:38.026885",
+  "overall_progress": 50.0
+}

@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 
-if "%API_PORT%"=="" set "API_PORT=8000"
+if "%API_PORT%"=="" set "API_PORT=9000"
 if "%FRONTEND_PORT%"=="" set "FRONTEND_PORT=5173"
 
 echo Starting services (production mode)...

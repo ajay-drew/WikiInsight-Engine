@@ -28,6 +28,7 @@ import os
 from src.common.logging_utils import setup_logging
 from src.modeling.topic_index import TopicIndex
 from src.serving.search_engine import HybridSearchEngine
+from src.serving.db_search_engine import DatabaseSearchEngine
 # EmbeddingGenerator imported lazily in lifespan() to avoid torch DLL issues during pytest collection
 from src.graph.graph_service import GraphService
 from src.research.wikidata_linker import WikidataLinker
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 _topic_index: Optional[TopicIndex] = None
 _search_engine: Optional[HybridSearchEngine] = None
+_db_search_engine: Optional[DatabaseSearchEngine] = None
 _graph_service: Optional[GraphService] = None
 _wikidata_linker: Optional[WikidataLinker] = None
 _cleaned_articles_df = None
@@ -50,19 +52,27 @@ def _get_wikipedia_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{encoded}"
 
 
-def _load_all_data() -> None:
+async def _load_all_data() -> None:
     """
     Load all data artifacts (topic index, search engine, graph service).
     This should be called after pipeline completes.
     """
     from tqdm import tqdm
+    import json
+    import os
     
-    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
+    global _topic_index, _search_engine, _db_search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
     
     load_start = perf_counter()
     logger.info("=" * 80)
     logger.info("Starting data loading process...")
     logger.info("=" * 80)
+    # #region agent log
+    try:
+        with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "C", "location": "api/main.py:55", "message": "_load_all_data entry", "data": {}, "timestamp": __import__("time").time() * 1000}) + "\n")
+    except: pass
+    # #endregion
     
     # Load topic index
     topic_index_start = perf_counter()
@@ -79,8 +89,59 @@ def _load_all_data() -> None:
         logger.exception("Failed to load topic index (%.2f seconds): %s", topic_index_time, exc)
         _topic_index = None
 
-    # Load HybridSearchEngine
+    # Try to load DatabaseSearchEngine first (PostgreSQL + pgvector)
+    db_search_engine_start = perf_counter()
+    _db_search_engine = None
+    try:
+        import yaml
+        CONFIG_PATH = "config.yaml"
+        config = yaml.safe_load(open(CONFIG_PATH, "r"))
+        db_cfg = config.get("database", {})
+        use_pgvector = db_cfg.get("use_pgvector", False)
+        
+        if use_pgvector:
+            logger.info("Attempting to initialize DatabaseSearchEngine (PostgreSQL + pgvector)...")
+            from src.database.connection import init_database, get_db_manager
+            from src.preprocessing.embeddings import EmbeddingGenerator
+            
+            # Initialize database
+            db_manager = await init_database()
+            if await db_manager.health_check():
+                # Check if database has articles
+                from src.database.repository import ArticleRepository
+                async with db_manager.session() as session:
+                    repo = ArticleRepository(session)
+                    article_count = await repo.count()
+                
+                if article_count > 0:
+                    # Load embedding model
+                    emb_cfg = config.get("preprocessing", {}).get("embeddings", {})
+                    model_name = emb_cfg.get("model", "all-MiniLM-L6-v2")
+                    embedding_model = EmbeddingGenerator(model_name=model_name)
+                    
+                    # Create database search engine
+                    from src.serving.db_search_engine import DatabaseSearchEngine
+                    _db_search_engine = DatabaseSearchEngine(
+                        db_manager=db_manager,
+                        embedding_model=embedding_model.model,
+                    )
+                    await _db_search_engine.initialize()
+                    db_search_engine_time = perf_counter() - db_search_engine_start
+                    logger.info("DatabaseSearchEngine initialized successfully in %.2f seconds (%d articles)", 
+                               db_search_engine_time, article_count)
+                else:
+                    logger.info("Database exists but has no articles. Will use file-based search as fallback.")
+            else:
+                logger.warning("Database health check failed. Will use file-based search as fallback.")
+    except Exception as exc:  # noqa: BLE001
+        db_search_engine_time = perf_counter() - db_search_engine_start
+        logger.warning("DatabaseSearchEngine initialization failed (%.2f seconds): %s. Will use file-based search.", 
+                      db_search_engine_time, exc)
+        _db_search_engine = None
+
+    # Load HybridSearchEngine (file-based fallback)
     search_engine_start = perf_counter()
+    _search_engine = None
     try:
         import os
         import pandas as pd
@@ -91,7 +152,20 @@ def _load_all_data() -> None:
         CLEANED_ARTICLES_PATH = os.path.join("data", "processed", "cleaned_articles.parquet")
         CONFIG_PATH = "config.yaml"
 
-        if os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
+        # Load file-based search as fallback (always try if files exist, even if database search is available)
+        # This ensures we have a working search engine even if database search fails
+        # #region agent log
+        embeddings_exists = os.path.exists(EMBEDDINGS_PATH)
+        articles_exists = os.path.exists(CLEANED_ARTICLES_PATH)
+        try:
+            with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "api/main.py:147", "message": "Checking search engine files", "data": {"embeddings_exists": embeddings_exists, "articles_exists": articles_exists, "embeddings_path": EMBEDDINGS_PATH, "articles_path": CLEANED_ARTICLES_PATH, "db_search_available": _db_search_engine is not None}, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except: pass
+        # #endregion
+        
+        # Only load file-based search if database search is not available (to avoid loading both)
+        # But if database search failed, we need file-based as fallback
+        if (_db_search_engine is None) and os.path.exists(EMBEDDINGS_PATH) and os.path.exists(CLEANED_ARTICLES_PATH):
             # Load articles
             logger.info("Loading cleaned articles from %s...", CLEANED_ARTICLES_PATH)
             articles_load_start = perf_counter()
@@ -152,9 +226,19 @@ def _load_all_data() -> None:
             logger.info("HybridSearchEngine initialized in %.2f seconds (total: %.2f seconds)", 
                        engine_init_time, search_engine_time)
             logger.info("HybridSearchEngine loaded successfully with %d articles", len(articles))
+            # #region agent log
+            try:
+                with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+                    f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "E", "location": "api/main.py:205", "message": "Search engine loaded successfully", "data": {"article_count": len(articles), "time_seconds": search_engine_time}, "timestamp": __import__("time").time() * 1000}) + "\n")
+            except: pass
+            # #endregion
         else:
             search_engine_time = perf_counter() - search_engine_start
-            logger.warning("Search engine artifacts not found (checked in %.2f seconds)", search_engine_time)
+            if _db_search_engine is not None:
+                logger.info("Database search engine available, skipping file-based search engine (checked in %.2f seconds)", search_engine_time)
+            else:
+                logger.warning("Search engine artifacts not found (checked in %.2f seconds). Files exist: embeddings=%s, articles=%s", 
+                             search_engine_time, embeddings_exists, articles_exists)
             _search_engine = None
             _cleaned_articles_df = None
     except Exception as exc:  # noqa: BLE001
@@ -216,7 +300,7 @@ def _load_all_data() -> None:
 
 def _clear_all_data() -> None:
     """Clear all loaded data. Called when a new pipeline starts."""
-    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
+    global _topic_index, _search_engine, _db_search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
     
     if _wikidata_linker:
         try:
@@ -226,6 +310,7 @@ def _clear_all_data() -> None:
     
     _topic_index = None
     _search_engine = None
+    _db_search_engine = None
     _graph_service = None
     _wikidata_linker = None
     _cleaned_articles_df = None
@@ -235,15 +320,22 @@ def _clear_all_data() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager for startup/shutdown events."""
-    global _topic_index, _search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
-    # Startup - DO NOT load data automatically
-    # Data will be loaded only after pipeline completes via /api/pipeline/reload endpoint
-    logger.info("API started. Data will be loaded after pipeline completes.")
-    _topic_index = None
-    _search_engine = None
-    _graph_service = None
-    _wikidata_linker = None
-    _cleaned_articles_df = None
+    global _topic_index, _search_engine, _db_search_engine, _graph_service, _wikidata_linker, _cleaned_articles_df
+    # Startup - Try to load data automatically if files exist
+    # This allows the API to work immediately after pipeline completes without needing to call /api/pipeline/reload
+    logger.info("API started. Attempting to load data if available...")
+    try:
+        await _load_all_data()
+        logger.info("Data loaded successfully on startup.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load data on startup (this is OK if pipeline hasn't run yet): %s", exc)
+        # Initialize to None if loading fails
+        _topic_index = None
+        _search_engine = None
+        _db_search_engine = None
+        _graph_service = None
+        _wikidata_linker = None
+        _cleaned_articles_df = None
 
     yield
     # Shutdown (if needed) - handle errors gracefully
@@ -256,6 +348,7 @@ async def lifespan(app: FastAPI):
         # Always clean up references
         _topic_index = None
         _search_engine = None
+        _db_search_engine = None
         _graph_service = None
         _wikidata_linker = None
         _cleaned_articles_df = None
@@ -405,6 +498,41 @@ async def health():
     return {"status": status}
 
 
+@app.get("/api/database/health")
+async def database_health():
+    """
+    Check PostgreSQL database connection health.
+    
+    Returns database connection status and basic stats.
+    """
+    try:
+        from src.database.connection import get_db_manager
+        
+        db_manager = get_db_manager()
+        is_healthy = await db_manager.health_check()
+        
+        if is_healthy:
+            stats = await db_manager.get_stats()
+            return {
+                "status": "healthy",
+                "connected": True,
+                "stats": stats,
+            }
+        else:
+            return {
+                "status": "unhealthy",
+                "connected": False,
+                "error": "Database health check failed",
+            }
+    except Exception as e:
+        logger.warning("Database health check failed: %s", e)
+        return {
+            "status": "unavailable",
+            "connected": False,
+            "error": str(e),
+        }
+
+
 def _ensure_index_available() -> TopicIndex:
     if _topic_index is None:
         raise HTTPException(
@@ -551,7 +679,14 @@ async def api_lookup_topic_cluster(request: Request, body: TopicQueryRequest):
 @limiter.limit("60/minute")
 async def api_clusters_overview(request: Request):
     """API-prefixed alias for /clusters/overview endpoint."""
-    return await clusters_overview(request)
+    try:
+        return await clusters_overview(request)
+    except HTTPException as e:
+        # Re-raise HTTPException as-is (includes 503 for unavailable service)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Error in api_clusters_overview")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/clusters/{cluster_id}", response_model=ClusterSummary)
@@ -691,6 +826,8 @@ async def api_search(request: Request, body: SearchRequest):
     """
     Hybrid search endpoint combining semantic (vector) and keyword (BM25) search.
     
+    Uses PostgreSQL + pgvector if available, falls back to file-based search.
+    
     Args:
         request: FastAPI request object (for rate limiting)
         body: Search request with query and optional top_k
@@ -698,12 +835,36 @@ async def api_search(request: Request, body: SearchRequest):
     Returns:
         Search results with titles, scores, ranks, and metadata
     """
-    global _search_engine
-    if _search_engine is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Search engine is not available. Run the data pipeline first.",
-        )
+    global _search_engine, _db_search_engine
+    
+    # Prefer database search if available
+    use_db_search = _db_search_engine is not None
+    
+    if not use_db_search and _search_engine is None:
+        # Provide more helpful error message
+        import os
+        EMBEDDINGS_PATH = os.path.join("data", "features", "embeddings.parquet")
+        CLEANED_ARTICLES_PATH = os.path.join("data", "processed", "cleaned_articles.parquet")
+        
+        embeddings_exists = os.path.exists(EMBEDDINGS_PATH)
+        articles_exists = os.path.exists(CLEANED_ARTICLES_PATH)
+        
+        if not embeddings_exists or not articles_exists:
+            missing_files = []
+            if not embeddings_exists:
+                missing_files.append(f"embeddings.parquet (expected at {EMBEDDINGS_PATH})")
+            if not articles_exists:
+                missing_files.append(f"cleaned_articles.parquet (expected at {CLEANED_ARTICLES_PATH})")
+            
+            raise HTTPException(
+                status_code=503,
+                detail=f"Search engine is not available. Missing required files: {', '.join(missing_files)}. Run the data pipeline first to generate these files.",
+            )
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="Search engine is not available. Files exist but search engine failed to load. Check server logs for details. Try reloading data via /api/pipeline/reload endpoint.",
+            )
 
     try:
         query = body.query.strip()
@@ -716,7 +877,11 @@ async def api_search(request: Request, body: SearchRequest):
                 total_results=0,
             )
 
-        search_results = _search_engine.search(query, top_k=top_k)
+        # Use database search if available, otherwise file-based
+        if use_db_search:
+            search_results = await _db_search_engine.search(query, top_k=top_k)
+        else:
+            search_results = _search_engine.search(query, top_k=top_k)
         
         # Build results with metadata
         results = []
@@ -725,12 +890,33 @@ async def api_search(request: Request, body: SearchRequest):
             wikipedia_url = _get_wikipedia_url(result.title)
             wikidata_qid = None
             wikidata_url = None
-            cluster_id = None
+            cluster_id = getattr(result, 'cluster_id', None)  # Database search may include cluster_id
             categories = []
             link_count = 0
 
             # Look up article metadata
-            if _cleaned_articles_df is not None:
+            if use_db_search:
+                # Get metadata from database
+                try:
+                    from src.database.connection import get_db_manager
+                    from src.database.repository import ArticleRepository
+                    db_manager = get_db_manager()
+                    async with db_manager.session() as session:
+                        repo = ArticleRepository(session)
+                        article = await repo.get_by_title(result.title)
+                        if article:
+                            categories = article.categories or []
+                            if isinstance(categories, list):
+                                categories = [str(c) for c in categories[:5]]  # Limit to 5
+                            links = article.links or []
+                            if isinstance(links, list):
+                                link_count = len(links)
+                            if cluster_id is None:
+                                cluster_id = article.cluster_id
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("Failed to get article metadata from database: %s", exc)
+            elif _cleaned_articles_df is not None:
+                # Get metadata from file-based DataFrame
                 article_row = _cleaned_articles_df[_cleaned_articles_df["title"].str.lower() == result.title.lower()]
                 if not article_row.empty:
                     row = article_row.iloc[0]
@@ -741,8 +927,8 @@ async def api_search(request: Request, body: SearchRequest):
                     if isinstance(links, list):
                         link_count = len(links)
 
-            # Get cluster ID from topic index
-            if _topic_index is not None:
+            # Get cluster ID from topic index if not already set
+            if cluster_id is None and _topic_index is not None:
                 try:
                     lookup_result = _topic_index.lookup(result.title)
                     cluster_id = lookup_result.cluster_id
@@ -846,10 +1032,23 @@ async def get_drift_scores(request: Request):
     
     report_path = "reports/drift_report.json"
     if os.path.exists(report_path):
-        with open(report_path, "r") as f:
-            return json.load(f)
+        try:
+            with open(report_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as exc:
+            logger.warning("Failed to read drift report: %s", exc)
+            return {
+                "drift_detected": False,
+                "error": "Drift report exists but could not be read",
+                "message": "Run drift detection to generate a new report."
+            }
     else:
-        raise HTTPException(status_code=404, detail="Drift report not found. Run clustering first.")
+        # Return a proper response instead of 404
+        return {
+            "drift_detected": False,
+            "message": "Drift detection has not been run yet. Run the clustering pipeline first, then drift detection will be available.",
+            "report_available": False
+        }
 
 
 @app.get("/api/monitoring/stability")
@@ -997,9 +1196,22 @@ async def reload_data(request: Request):
     logger.info("=" * 80)
     logger.info("Data reload request received")
     logger.info("=" * 80)
+    # #region agent log
+    import json
+    try:
+        with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+            f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "api/main.py:1133", "message": "Reload endpoint called", "data": {}, "timestamp": __import__("time").time() * 1000}) + "\n")
+    except: pass
+    # #endregion
     
     try:
-        _load_all_data()
+        await _load_all_data()
+        # #region agent log
+        try:
+            with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "api/main.py:1144", "message": "_load_all_data completed", "data": {}, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except: pass
+        # #endregion
         
         total_time = perf_counter() - endpoint_start
         logger.info("Data reload endpoint completed in %.2f seconds", total_time)
@@ -1008,9 +1220,16 @@ async def reload_data(request: Request):
         status = {
             "topic_index": _topic_index is not None,
             "search_engine": _search_engine is not None,
+            "db_search_engine": _db_search_engine is not None,
             "graph_service": _graph_service is not None,
             "wikidata_linker": _wikidata_linker is not None,
         }
+        # #region agent log
+        try:
+            with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
+                f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "B", "location": "api/main.py:1150", "message": "Reload status check", "data": status, "timestamp": __import__("time").time() * 1000}) + "\n")
+        except: pass
+        # #endregion
         
         return {
             "status": "reloaded",
@@ -1066,7 +1285,7 @@ async def stream_pipeline_progress(request: Request):
                     if all_done and not reloaded:
                         # Reload data when pipeline completes
                         try:
-                            _load_all_data()
+                            await _load_all_data()
                             reloaded = True
                             # Send reload notification
                             reload_event = json.dumps({
@@ -1123,5 +1342,5 @@ if os.path.exists(FRONTEND_DIST_PATH):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=9000)
 

@@ -5,37 +5,44 @@ data:
     cache_ttl: 3600
 ingestion:
   seed_queries:
-  - Natural Language Processing
-  - Robotics
-  - Artificial Intelligence
-  - Computer Vision
-  - Artificial General Intelligence
+  - Machine learning
+  - Artificial intelligence
+  - Data science
   per_query_limit: 50
-  max_articles: 1000
+  max_articles: 670
   max_links_per_article: 50
   stub_min_words: 200
   default_max_articles: 1000
   default_per_query_limit: 50
 models:
   clustering:
-    method: agglomerative
+    method: kmeans
     n_clusters: 100
     random_state: 42
+    use_gpu: 'true'
   neighbors:
     n_neighbors: 10
     algorithm: auto
 preprocessing:
   embeddings:
     model: all-MiniLM-L6-v2
-    batch_size: 32
+    batch_size: 64
+    device: cuda
+database:
+  url: postgresql+asyncpg://postgres:postgres@localhost:5432/wikiinsight
+  pool_size: 10
+  use_pgvector: true
+performance:
+  max_workers: 8
+  use_multiprocessing: true
 search:
   bm25:
     title_weight: 2.0
     body_weight: 1.0
     use_nltk_normalization: true
 api:
-  host: 0.0.0.0
-  port: 8000
+  host: 127.0.0.1
+  port: 9000
   workers: 4
   rate_limit: 100
 mlops:

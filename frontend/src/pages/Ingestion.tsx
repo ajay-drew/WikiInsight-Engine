@@ -4,7 +4,7 @@ import { connectPipelineProgress, PipelineConfig, PipelineProgress, startPipelin
 export function IngestionPage() {
   const [queries, setQueries] = useState<string[]>(["Machine learning", "Artificial intelligence", "Data science"]);
   const [perQueryLimit, setPerQueryLimit] = useState<number>(50);
-  const [maxArticles] = useState<number>(1000);
+  const [maxArticles, setMaxArticles] = useState<number>(1000);
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +190,29 @@ export function IngestionPage() {
             <span>1</span>
             <span>70</span>
           </div>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-2">
+            Max Articles: {maxArticles}
+          </label>
+          <input
+            type="range"
+            min="10"
+            max="1000"
+            step="10"
+            value={maxArticles}
+            onChange={(e) => setMaxArticles(parseInt(e.target.value))}
+            className="w-full"
+            disabled={isRunning}
+          />
+          <div className="flex justify-between text-xs text-slate-400 mt-1">
+            <span>10</span>
+            <span>1000</span>
+          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            Maximum total articles to fetch (hard cap: 1000)
+          </p>
         </div>
 
         <div className="border-t border-slate-800 pt-4">

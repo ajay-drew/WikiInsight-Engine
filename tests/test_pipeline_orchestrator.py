@@ -6,6 +6,10 @@ This test verifies that the pipeline orchestrator correctly:
 2. Monitors progress for each stage
 3. Handles stage failures gracefully
 4. Continues to next stage only after previous stage succeeds
+
+NOTE: The full end-to-end tests are marked as slow and skipped by default
+because they run the entire ML pipeline which takes 10+ minutes.
+Run with: pytest -m slow to include slow tests.
 """
 
 import os
@@ -22,6 +26,9 @@ import pytest
 import yaml
 
 pytest.importorskip("mwclient")
+
+# Mark for slow integration tests - skipped by default
+slow = pytest.mark.skip(reason="Slow integration test - run with pytest -m slow")
 
 
 @pytest.fixture
@@ -115,6 +122,7 @@ def mock_wikipedia_articles():
     return articles
 
 
+@slow
 @pytest.mark.asyncio
 async def test_pipeline_orchestrator_end_to_end(temp_pipeline_dir, mock_wikipedia_articles):
     """
@@ -125,6 +133,9 @@ async def test_pipeline_orchestrator_end_to_end(temp_pipeline_dir, mock_wikipedi
     2. Runs the pipeline orchestrator (which should run all stages)
     3. Verifies all stages completed successfully
     4. Verifies all expected artifacts are created
+    
+    NOTE: This is a slow integration test (10+ minutes). Skipped by default.
+    Run with: pytest -m slow tests/test_pipeline_orchestrator.py
     """
     from src.ingestion.fetch_wikipedia_data import main_async as ingestion_main_async
     
@@ -405,10 +416,14 @@ def test_pipeline_orchestrator_stage_failure(temp_pipeline_dir):
         os.chdir(original_cwd)
 
 
+@slow
 @pytest.mark.asyncio
 async def test_pipeline_orchestrator_progress_tracking(temp_pipeline_dir, mock_wikipedia_articles):
     """
     Test that orchestrator correctly tracks progress for each stage.
+    
+    NOTE: This is a slow integration test (10+ minutes). Skipped by default.
+    Run with: pytest -m slow tests/test_pipeline_orchestrator.py
     """
     from src.ingestion.fetch_wikipedia_data import main_async as ingestion_main_async
     

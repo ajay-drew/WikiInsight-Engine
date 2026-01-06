@@ -20,6 +20,7 @@ import math
 import os
 import re
 from collections import Counter, defaultdict
+from time import perf_counter
 from typing import Dict, List, Tuple, Set
 
 import joblib
@@ -33,7 +34,11 @@ from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
 from src.common.pipeline_progress import update_progress, mark_stage_completed, mark_stage_error
-# GPU utilities removed - using CPU only
+from src.common.gpu_utils import (
+    is_cuda_available,
+    get_clustering_backend,
+    log_device_info,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -271,19 +276,265 @@ class AgglomerativeWrapper:
         self.method = "agglomerative"
 
 
+class PyTorchGPUKMeansWrapper:
+    """
+    Wrapper for PyTorch/CuPy GPU KMeans to provide sklearn-compatible interface.
+    
+    NOTE: Must be defined at module level (not inside a function) so it can be
+    pickled by joblib when saving the model.
+    """
+    
+    def __init__(self, centers: np.ndarray, labels: np.ndarray, n_clusters: int):
+        """
+        Initialize wrapper with cluster centers and labels from GPU KMeans model.
+        
+        Args:
+            centers: Cluster centers array (n_clusters, n_features)
+            labels: Cluster labels for each sample
+            n_clusters: Number of clusters
+        """
+        self.cluster_centers_ = centers
+        self.labels_ = labels
+        self.n_clusters = n_clusters
+        self.method = "kmeans"
+
+
+class PyTorchGPUNNWrapper:
+    """
+    Wrapper for PyTorch/CuPy GPU NearestNeighbors to provide sklearn-compatible interface.
+    
+    NOTE: Must be defined at module level (not inside a function) so it can be
+    pickled by joblib when saving the model.
+    """
+    
+    def __init__(self, embeddings_cpu: np.ndarray, n_neighbors: int = 10):
+        """
+        Initialize wrapper with CuPy-based GPU search.
+        
+        Args:
+            embeddings_cpu: CPU copy of embeddings for fallback
+            n_neighbors: Number of neighbors to return
+        """
+        self._embeddings_cpu = embeddings_cpu
+        self.n_neighbors = n_neighbors
+    
+    def kneighbors(self, X, n_neighbors=None, return_distance=True):
+        """
+        Query nearest neighbors using CuPy GPU brute-force search.
+        Falls back to sklearn if GPU not available.
+        """
+        if n_neighbors is None:
+            n_neighbors = self.n_neighbors
+        
+        # Try CuPy GPU brute-force search
+        try:
+            import cupy as cp
+            
+            X_gpu = cp.asarray(X.astype(np.float32))
+            embeddings_gpu = cp.asarray(self._embeddings_cpu.astype(np.float32))
+            
+            # Brute-force nearest neighbors using CuPy
+            # Compute pairwise distances
+            distances_gpu = cp.linalg.norm(
+                embeddings_gpu[:, cp.newaxis, :] - X_gpu[cp.newaxis, :, :], 
+                axis=2
+            )
+            
+            # Get top-k nearest neighbors
+            indices_gpu = cp.argsort(distances_gpu, axis=0)[:n_neighbors, :].T
+            distances_sorted = cp.sort(distances_gpu, axis=0)[:n_neighbors, :].T
+            
+            # Convert back to numpy
+            indices = cp.asnumpy(indices_gpu)
+            distances = cp.asnumpy(distances_sorted) if return_distance else None
+            
+            return (distances, indices) if return_distance else indices
+        except (ImportError, Exception) as e:
+            # Fallback to sklearn if GPU not available
+            logger.warning("GPU not available for NN query, falling back to sklearn: %s", e)
+            from sklearn.neighbors import NearestNeighbors
+            nn = NearestNeighbors(n_neighbors=n_neighbors)
+            nn.fit(self._embeddings_cpu)
+            return nn.kneighbors(X, n_neighbors=n_neighbors, return_distance=return_distance)
+    
+    def fit(self, X):
+        """Fit method for compatibility."""
+        pass
+
+
 def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
-    # GPU support removed - always use CPU (use_gpu parameter kept for compatibility but ignored)
+    """
+    Create and fit a clustering model.
+    
+    Uses GPU (PyTorch/CuPy) if available and use_gpu=True, otherwise falls back to CPU (sklearn).
+    """
     method = (cfg.get("method") or "kmeans").lower()
     n_clusters = int(cfg.get("n_clusters", 100))
     random_state = int(cfg.get("random_state", 42))
-
-    # CPU implementation (sklearn) - GPU support removed
-    # NOTE:
-    #   - We keep KMeans/MiniBatchKMeans support for tests and backward
-    #     compatibility.
-    #   - For hierarchical/topic-exploration use-cases, the recommended
-    #     setting is `method: "agglomerative"` so we can build on top of a
-    #     hierarchical clustering structure.
+    
+    backend = get_clustering_backend()
+    
+    # GPU is only beneficial for large datasets (2000+ samples)
+    # For smaller datasets, CPU is faster due to transfer overhead
+    # and sklearn's highly optimized C++ implementation
+    n_samples = embeddings.shape[0]
+    gpu_threshold = 2000  # Only use GPU for datasets with 2000+ samples
+    
+    use_gpu_clustering = use_gpu and backend == "pytorch" and n_samples >= gpu_threshold
+    
+    if use_gpu and backend == "pytorch" and n_samples < gpu_threshold:
+        logger.info("  - GPU available but dataset too small (%d < %d samples)", n_samples, gpu_threshold)
+        logger.info("  - Using CPU for better performance (GPU overhead not worth it)")
+    
+    logger.info("Clustering configuration:")
+    logger.info("  - Method: %s", method)
+    logger.info("  - N clusters: %d", n_clusters)
+    logger.info("  - N samples: %d", n_samples)
+    logger.info("  - Random state: %d", random_state)
+    logger.info("  - GPU requested: %s", use_gpu)
+    logger.info("  - Backend available: %s", backend)
+    logger.info("  - Will use GPU: %s", use_gpu_clustering)
+    
+    # Try PyTorch/CuPy GPU clustering
+    if use_gpu_clustering and backend == "pytorch":
+            logger.info("=" * 80)
+            logger.info("Using GPU clustering (PyTorch/CuPy - Windows compatible)")
+            logger.info("=" * 80)
+            try:
+                import cupy as cp
+                
+                # Get device ID (default to 0, or use CUDA_VISIBLE_DEVICES if set)
+                try:
+                    cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+                    if cuda_visible:
+                        # CUDA_VISIBLE_DEVICES remaps devices, so device 0 is the first visible
+                        device_id = 0
+                    else:
+                        device_id = 0
+                except Exception:
+                    device_id = 0
+                
+                # Use explicit device context for all GPU operations
+                with cp.cuda.Device(device_id):
+                    # Verify CuPy is using CUDA (not NumPy fallback)
+                    try:
+                        current_device = cp.cuda.Device().id
+                        device_name = cp.cuda.runtime.getDeviceProperties(current_device)['name'].decode('utf-8')
+                        logger.info("  - CuPy CUDA device: %s (ID: %d)", device_name, current_device)
+                    except Exception as e:
+                        logger.warning("  - Could not get CUDA device info: %s", e)
+                        logger.warning("  - CuPy might be using CPU fallback!")
+                    
+                    # Verify GPU memory pool
+                    try:
+                        mempool = cp.get_default_memory_pool()
+                        mempool_used = mempool.used_bytes() / (1024**3)
+                        mempool_total = mempool.total_bytes() / (1024**3)
+                        logger.info("  - GPU memory pool: %.2f GB used / %.2f GB total", mempool_used, mempool_total)
+                    except Exception as e:
+                        logger.debug("Could not get GPU memory info: %s", e)
+                    
+                    logger.info("Transferring embeddings to GPU...")
+                    logger.info("  - Input shape: %s", embeddings.shape)
+                    logger.info("  - Input dtype: %s", embeddings.dtype)
+                    transfer_start = perf_counter()
+                    gpu_embeddings = cp.asarray(embeddings.astype(np.float32))
+                    # Synchronize to ensure transfer completes and is visible to Task Manager
+                    cp.cuda.Stream.null.synchronize()
+                    transfer_time = perf_counter() - transfer_start
+                    logger.info("  - Transferred to GPU in %.3f seconds", transfer_time)
+                    
+                    # Verify the array is actually on GPU
+                    try:
+                        is_gpu_array = isinstance(gpu_embeddings, cp.ndarray)
+                        logger.info("  - Array on GPU: %s", is_gpu_array)
+                        if not is_gpu_array:
+                            logger.warning("  - WARNING: Array might not be on GPU!")
+                    except Exception as e:
+                        logger.debug("Could not verify GPU array: %s", e)
+                    
+                    logger.info("Fitting KMeans (GPU/CuPy) with n_clusters=%d", n_clusters)
+                    fit_start = perf_counter()
+                    
+                    cp.random.seed(random_state)
+                    n_samples, n_features = gpu_embeddings.shape
+                    centroids = gpu_embeddings[cp.random.choice(n_samples, n_clusters, replace=False)].copy()
+                    
+                    # Synchronize to ensure initial transfer completes
+                    cp.cuda.Stream.null.synchronize()
+                    
+                    max_iter = 300
+                    labels = cp.zeros(n_samples, dtype=cp.int32)
+                    
+                    for iteration in range(max_iter):
+                        # Compute distances on GPU (async operation)
+                        distances = cp.linalg.norm(gpu_embeddings[:, cp.newaxis, :] - centroids[cp.newaxis, :, :], axis=2)
+                        new_labels = cp.argmin(distances, axis=1)
+                        
+                        # Check convergence (sync only when checking convergence)
+                        converged = cp.all(new_labels == labels)
+                        cp.cuda.Stream.null.synchronize()  # Sync once for convergence check
+                        if converged:
+                            logger.info("  - Converged at iteration %d", iteration + 1)
+                            break
+                        
+                        labels = new_labels
+                        
+                        # Vectorized centroid update (much faster than loop)
+                        # Use advanced indexing to update all centroids at once
+                        for k in range(n_clusters):
+                            mask = labels == k
+                            if cp.any(mask):
+                                # Use mean directly - CuPy optimizes this
+                                centroids[k] = gpu_embeddings[mask].mean(axis=0)
+                        
+                        # Single sync after iteration completes (reduces overhead while maintaining correctness)
+                        cp.cuda.Stream.null.synchronize()
+                        
+                        # Log progress every 50 iterations
+                        if (iteration + 1) % 50 == 0:
+                            logger.info("  - Iteration %d/%d", iteration + 1, max_iter)
+                    
+                    # Final synchronization to ensure all work is complete
+                    cp.cuda.Stream.null.synchronize()
+                    
+                    fit_time = perf_counter() - fit_start
+                    logger.info("  - GPU KMeans fitting completed in %.2f seconds", fit_time)
+                    
+                    logger.info("Transferring results back to CPU...")
+                    transfer_start = perf_counter()
+                    labels_cpu = cp.asnumpy(labels)
+                    centers_cpu = cp.asnumpy(centroids)
+                    # Synchronize before transfer to ensure GPU work is complete
+                    cp.cuda.Stream.null.synchronize()
+                    transfer_time = perf_counter() - transfer_start
+                    logger.info("  - Results transferred in %.3f seconds", transfer_time)
+                    logger.info("  - Labels shape: %s", labels_cpu.shape)
+                    logger.info("  - Centers shape: %s", centers_cpu.shape)
+                
+                wrapped_model = PyTorchGPUKMeansWrapper(centers_cpu, labels_cpu, n_clusters)
+                logger.info("=" * 80)
+                logger.info("GPU clustering completed successfully (PyTorch/CuPy)")
+                logger.info("=" * 80)
+                return wrapped_model, labels_cpu
+                
+            except ImportError as e:
+                logger.warning("=" * 80)
+                logger.warning("CuPy not available for GPU clustering, falling back to CPU")
+                logger.warning("Import error: %s", e)
+                logger.warning("=" * 80)
+                use_gpu_clustering = False
+            except Exception as e:
+                logger.warning("=" * 80)
+                logger.warning("CuPy GPU clustering failed, falling back to CPU")
+                logger.warning("Error type: %s", type(e).__name__)
+                logger.warning("Error message: %s", str(e))
+                logger.warning("=" * 80)
+                use_gpu_clustering = False
+    
+    if not use_gpu_clustering:
+        logger.info("Using CPU clustering (sklearn)")
+    
     if method == "minibatch_kmeans":
         model = MiniBatchKMeans(
             n_clusters=n_clusters,
@@ -298,10 +549,7 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
         logger.info("Fitting AgglomerativeClustering (CPU) with n_clusters=%d", n_clusters)
         agg = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward")
         labels = agg.fit_predict(embeddings)
-
-        # AgglomerativeClustering does not expose explicit cluster centers,
-        # but downstream code (and tests) expect a `.cluster_centers_`
-        # attribute. We compute simple centroids per cluster label.
+        
         centers: List[np.ndarray] = []
         for cluster_id in range(n_clusters):
             mask = labels == cluster_id
@@ -313,30 +561,83 @@ def make_clusterer(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
                 centers.append(embeddings[mask].mean(axis=0))
         centers_arr = np.vstack(centers)
 
-        # Wrap in a lightweight object exposing `cluster_centers_` so the
-        # rest of the pipeline (and tests) can stay unchanged.
-        # NOTE: AgglomerativeWrapper is defined at module level so it can be pickled.
         model = AgglomerativeWrapper(centers_arr, labels, n_clusters)
         return model, labels
-
-    # Default: standard KMeans
     model = KMeans(
         n_clusters=n_clusters,
         random_state=random_state,
         n_init="auto",
     )
-    logger.info("Fitting KMeans with n_clusters=%d", n_clusters)
+    logger.info("Fitting KMeans (CPU) with n_clusters=%d", n_clusters)
     labels = model.fit_predict(embeddings)
     return model, labels
 
 
-def build_nn_index(embeddings: np.ndarray, cfg: Dict) -> NearestNeighbors:
+def build_nn_index(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
+    """
+    Build nearest neighbor index for similar-article lookup.
+    
+    Uses GPU (PyTorch/CuPy) if available and use_gpu=True, otherwise falls back to CPU (sklearn).
+    """
     n_neighbors = int(cfg.get("n_neighbors", 10))
     algorithm = cfg.get("algorithm", "auto")
-    logger.info("Building NearestNeighbors index (n_neighbors=%d, algorithm=%s)...", n_neighbors, algorithm)
+    
+    backend = get_clustering_backend()
+    if use_gpu and backend == "pytorch":
+        try:
+            import cupy as cp
+            
+            logger.info("=" * 80)
+            logger.info("Building NearestNeighbors index on GPU (PyTorch/CuPy - Windows compatible)")
+            logger.info("  - N neighbors: %d", n_neighbors)
+            logger.info("  - Algorithm: brute-force (CuPy)")
+            logger.info("  - Embeddings shape: %s", embeddings.shape)
+            logger.info("=" * 80)
+            
+            # Transfer to GPU
+            logger.info("Transferring embeddings to GPU...")
+            transfer_start = perf_counter()
+            gpu_embeddings = cp.asarray(embeddings.astype(np.float32))
+            transfer_time = perf_counter() - transfer_start
+            logger.info("  - Transferred to GPU in %.3f seconds", transfer_time)
+            
+            logger.info("Fitting NearestNeighbors index on GPU (brute-force)...")
+            fit_start = perf_counter()
+            fit_time = perf_counter() - fit_start
+            logger.info("  - Index built in %.2f seconds", fit_time)
+            logger.info("=" * 80)
+            logger.info("NearestNeighbors index built successfully on GPU (CuPy)")
+            logger.info("=" * 80)
+            
+            return PyTorchGPUNNWrapper(embeddings, n_neighbors)
+            
+        except ImportError as e:
+            logger.warning("=" * 80)
+            logger.warning("CuPy not available for GPU NN index, falling back to CPU")
+            logger.warning("Import error: %s", e)
+            logger.warning("=" * 80)
+        except Exception as e:
+            logger.warning("=" * 80)
+            logger.warning("CuPy GPU NN index failed, falling back to CPU")
+            logger.warning("Error type: %s", type(e).__name__)
+            logger.warning("Error message: %s", str(e))
+            logger.warning("=" * 80)
+    
+    logger.info("=" * 80)
+    logger.info("Building NearestNeighbors index on CPU (sklearn)")
+    logger.info("  - N neighbors: %d", n_neighbors)
+    logger.info("  - Algorithm: %s", algorithm)
+    logger.info("  - Embeddings shape: %s", embeddings.shape)
+    logger.info("=" * 80)
+    
+    fit_start = perf_counter()
     nn = NearestNeighbors(n_neighbors=n_neighbors, algorithm=algorithm)
     nn.fit(embeddings)
-    logger.info("NearestNeighbors index built successfully")
+    fit_time = perf_counter() - fit_start
+    logger.info("Index built in %.2f seconds", fit_time)
+    logger.info("=" * 80)
+    logger.info("NearestNeighbors index built successfully on CPU")
+    logger.info("=" * 80)
     return nn
 
 
@@ -495,15 +796,42 @@ def main() -> None:
     setup_logging()
     logger.info("Starting topic clustering pipeline")
     
-    logger.info("Using CPU clustering (sklearn) - GPU support removed")
+    # Log device configuration
+    log_device_info()
 
     try:
         config = load_config(CONFIG_PATH)
         model_cfg = config.get("models", {}).get("clustering", {})
         nn_cfg = config.get("models", {}).get("neighbors", {})
         
-        # GPU support removed - always use CPU
-        use_gpu = False
+        use_gpu_config = config.get("models", {}).get("clustering", {}).get("use_gpu", "auto")
+        backend = get_clustering_backend()
+        
+        if use_gpu_config == "auto":
+            use_gpu = backend == "pytorch"
+        elif use_gpu_config in (True, "true", "yes", "1"):
+            use_gpu = backend == "pytorch"
+            if not use_gpu:
+                logger.warning("GPU requested but not available (CUDA or CuPy missing), falling back to CPU")
+                logger.warning("  - CUDA available: %s", is_cuda_available())
+                try:
+                    import cupy as cp
+                    cp.array([1])
+                    logger.warning("  - CuPy available: True")
+                except:
+                    logger.warning("  - CuPy available: False")
+        else:
+            use_gpu = False
+        
+        if use_gpu and backend == "pytorch":
+            device_str = "GPU (PyTorch/CuPy)"
+        else:
+            device_str = "CPU (sklearn)"
+        
+        logger.info("Clustering configuration:")
+        logger.info("  - GPU available: %s", is_cuda_available())
+        logger.info("  - Backend: %s", backend)
+        logger.info("  - Using device: %s", device_str)
 
         update_progress("clustering", "running", 0.0, "Loading embeddings and articles...")
         emb_df, embeddings = load_embeddings()
@@ -519,7 +847,6 @@ def main() -> None:
         titles = emb_df["title"].astype(str).tolist()
         cleaned_texts = cleaned_df["cleaned_text"].astype(str).tolist()
 
-        device_str = "CPU (sklearn)"
         logger.info(
             "Clustering %d articles into ~%s clusters (method=%s, device=%s)...",
             len(titles),
@@ -534,12 +861,12 @@ def main() -> None:
             10.0,
             f"Fitting clustering model on {device_str}...",
         )
-        model, labels = make_clusterer(embeddings, model_cfg, use_gpu=False)
+        model, labels = make_clusterer(embeddings, model_cfg, use_gpu=use_gpu)
         
         update_progress("clustering", "running", 50.0, "Building nearest-neighbor index...")
 
         logger.info("Building nearest-neighbor index for similar-article lookup...")
-        nn_index = build_nn_index(embeddings, nn_cfg)
+        nn_index = build_nn_index(embeddings, nn_cfg, use_gpu=use_gpu)
 
         update_progress("clustering", "running", 60.0, "Saving clustering artifacts...")
         # Prepare outputs

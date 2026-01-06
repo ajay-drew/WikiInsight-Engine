@@ -1,0 +1,64 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: WikiInsight
+        - generic [ref=e8]: Topic Explorer
+      - navigation [ref=e9]:
+        - button "Search" [ref=e10] [cursor=pointer]
+        - button "Topic Lookup" [ref=e11] [cursor=pointer]
+        - button "Clusters" [ref=e12] [cursor=pointer]
+        - button "Monitoring" [ref=e13] [cursor=pointer]
+        - button "Ingestion" [ref=e14] [cursor=pointer]
+  - main [ref=e15]:
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - heading "Pipeline Configuration" [level=1] [ref=e18]
+        - paragraph [ref=e19]: Configure and start the data pipeline. Set 3-6 seed queries, per-query article limit (up to 70), and the system will fetch articles (capped at 1000 total).
+      - generic [ref=e20]:
+        - generic [ref=e21]:
+          - generic [ref=e22]: Seed Queries (3/6)
+          - generic [ref=e23]:
+            - textbox "Query 1 (e.g. Machine learning)" [disabled] [ref=e25]: Machine learning
+            - textbox "Query 2 (e.g. Machine learning)" [disabled] [ref=e27]: Data science
+            - textbox "Query 3 (e.g. Machine learning)" [disabled] [ref=e29]: Artificial intelligence
+          - button "+ Add Query" [disabled] [ref=e30]
+        - generic [ref=e31]:
+          - generic [ref=e32]: "Per-Query Limit: 50 articles"
+          - slider [disabled] [ref=e33]: "50"
+          - generic [ref=e34]:
+            - generic [ref=e35]: "1"
+            - generic [ref=e36]: "70"
+        - generic [ref=e37]:
+          - generic [ref=e38]: "Max Articles: 1000"
+          - slider [disabled] [ref=e39]: "1000"
+          - generic [ref=e40]:
+            - generic [ref=e41]: "10"
+            - generic [ref=e42]: "1000"
+          - paragraph [ref=e43]: "Maximum total articles to fetch (hard cap: 1000)"
+        - generic [ref=e45]:
+          - generic [ref=e46]: "Total Potential Articles:"
+          - generic [ref=e47]: "150"
+        - button "Pipeline Running..." [disabled] [ref=e48]
+      - generic [ref=e49]:
+        - generic [ref=e51]:
+          - heading "Pipeline Progress" [level=2] [ref=e52]
+          - generic [ref=e53]: 0.0%
+        - generic [ref=e55]:
+          - generic [ref=e56]:
+            - generic [ref=e57]: ingestion
+            - generic [ref=e58]: ○ Pending
+          - generic [ref=e59]:
+            - generic [ref=e60]: preprocessing
+            - generic [ref=e61]: ○ Pending
+          - generic [ref=e62]:
+            - generic [ref=e63]: clustering
+            - generic [ref=e64]: ○ Pending
+          - generic [ref=e65]:
+            - generic [ref=e66]: build graph
+            - generic [ref=e67]: ○ Pending
+  - contentinfo [ref=e68]: "Backend: FastAPI · Frontend: React + Vite + Tailwind"
+```

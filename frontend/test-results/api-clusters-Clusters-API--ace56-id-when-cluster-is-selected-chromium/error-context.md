@@ -1,0 +1,83 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]: WikiInsight
+        - generic [ref=e8]: Topic Explorer
+      - navigation [ref=e9]:
+        - button "Search" [ref=e10] [cursor=pointer]
+        - button "Topic Lookup" [ref=e11] [cursor=pointer]
+        - button "Clusters" [ref=e12] [cursor=pointer]
+        - button "Monitoring" [ref=e13] [cursor=pointer]
+        - button "Ingestion" [ref=e14] [cursor=pointer]
+  - main [ref=e15]:
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - heading "Clusters Overview" [level=1] [ref=e18]
+        - paragraph [ref=e19]: Inspect topic clusters, their sizes, and representative articles. For each cluster we also show "topic words" – everyday words that appear often in this cluster and much less in others, giving a quick feel for what the cluster is about.
+        - generic [ref=e20]:
+          - paragraph [ref=e21]: "Graph Node Colors:"
+          - paragraph [ref=e22]: Each node (article) in the graph is colored based on its cluster assignment. Different colors represent different topic clusters, making it easy to visually identify which articles belong to the same topic group. Articles in the same cluster share similar colors, while articles from different clusters have distinct colors.
+          - paragraph [ref=e23]: "Note: The color palette cycles through 10 colors, so clusters with IDs that differ by multiples of 10 may share the same color."
+      - generic [ref=e24]:
+        - generic [ref=e25]:
+          - button "Table View" [ref=e26] [cursor=pointer]
+          - button "Graph View" [ref=e27] [cursor=pointer]
+        - generic [ref=e28]:
+          - generic [ref=e29]:
+            - generic [ref=e30]:
+              - generic [ref=e31]: All Clusters
+              - generic [ref=e32]: "Total: 2"
+            - table [ref=e34]:
+              - rowgroup [ref=e35]:
+                - row "Cluster Name Size Topic words ID" [ref=e36]:
+                  - columnheader "Cluster Name" [ref=e37] [cursor=pointer]:
+                    - generic [ref=e38]:
+                      - generic [ref=e39]: Cluster Name
+                      - img [ref=e40]
+                  - columnheader "Size" [ref=e42] [cursor=pointer]:
+                    - generic [ref=e43]:
+                      - generic [ref=e44]: Size
+                      - img [ref=e45]
+                  - columnheader "Topic words" [ref=e47]
+                  - columnheader "ID" [ref=e48] [cursor=pointer]:
+                    - generic [ref=e49]:
+                      - generic [ref=e50]: ID
+                      - img [ref=e51]
+                  - columnheader [ref=e53]
+              - rowgroup [ref=e54]:
+                - row "Machine learning 50 machine, learning, algorithm 0 Inspect" [ref=e55]:
+                  - cell "Machine learning" [ref=e56]
+                  - cell "50" [ref=e57]
+                  - cell "machine, learning, algorithm" [ref=e58]
+                  - cell "0" [ref=e59]
+                  - cell "Inspect" [ref=e60]:
+                    - button "Inspect" [ref=e61] [cursor=pointer]
+                - row "Data science 45 data, science, analysis 1 Inspect" [ref=e62]:
+                  - cell "Data science" [ref=e63]
+                  - cell "45" [ref=e64]
+                  - cell "data, science, analysis" [ref=e65]
+                  - cell "1" [ref=e66]
+                  - cell "Inspect" [ref=e67]:
+                    - button "Inspect" [ref=e68] [cursor=pointer]
+          - generic [ref=e69]:
+            - heading "Machine learning" [level=2] [ref=e70]
+            - paragraph [ref=e71]: "Cluster ID: 0"
+            - generic [ref=e72]:
+              - paragraph [ref=e73]: "Size: 50"
+              - generic [ref=e74]:
+                - paragraph [ref=e75]: "Topic words (high-frequency and distinctive for this cluster):"
+                - paragraph [ref=e76]: machine, learning, algorithm, neural, training
+              - generic [ref=e77]:
+                - paragraph [ref=e78]: "Representative Articles:"
+                - list [ref=e79]:
+                  - listitem [ref=e80]: Machine learning
+                  - listitem [ref=e81]: Deep learning
+                  - listitem [ref=e82]: Neural network
+                  - listitem [ref=e83]: Artificial intelligence
+                  - listitem [ref=e84]: Supervised learning
+  - contentinfo [ref=e85]: "Backend: FastAPI · Frontend: React + Vite + Tailwind"
+```

@@ -27,6 +27,8 @@ from .cluster_topics import (
     KMEANS_MODEL_PATH,
     NN_INDEX_PATH,
     AgglomerativeWrapper,  # Import wrapper class so joblib can unpickle saved models
+    PyTorchGPUKMeansWrapper,  # Import GPU wrapper classes for unpickling
+    PyTorchGPUNNWrapper,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,11 +99,13 @@ class TopicIndex:
         assignments_df = pd.read_parquet(CLUSTER_ASSIGNMENTS_PATH)
         summaries_df = pd.read_parquet(CLUSTERS_SUMMARY_PATH)
 
-        # Workaround: Register AgglomerativeWrapper in __main__ module before loading
+        # Workaround: Register wrapper classes in __main__ module before loading
         # This handles cases where the model was saved when cluster_topics.py was run as __main__
-        # The pickle file references __main__.AgglomerativeWrapper, so we need to register it there
+        # The pickle files reference __main__.WrapperClass, so we need to register them there
         if "__main__" in sys.modules:
             sys.modules["__main__"].AgglomerativeWrapper = AgglomerativeWrapper
+            sys.modules["__main__"].PyTorchGPUKMeansWrapper = PyTorchGPUKMeansWrapper
+            sys.modules["__main__"].PyTorchGPUNNWrapper = PyTorchGPUNNWrapper
 
         cluster_model = joblib.load(KMEANS_MODEL_PATH)
         nn_index = joblib.load(NN_INDEX_PATH)

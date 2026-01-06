@@ -374,22 +374,59 @@ async def main_async(
 
         logger.info("Loaded %d existing articles from previous run", len(existing_articles))
 
-    # Load rate limit and seed queries from config
+    # Load rate limit, seed queries, max_articles, per_query_limit, and performance settings from config
     import yaml
     config_path = "config.yaml"
     rate_limit = 200.0  # Default
     seed_queries = None
+    config_max_workers = max_workers  # Use CLI arg as default
+    config_max_articles = max_articles  # Use CLI arg as default
+    config_per_query_limit = per_query_limit  # Use CLI arg as default
+    
     if os.path.exists(config_path):
         try:
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f) or {}
             rate_limit = float(config.get("data", {}).get("wikipedia", {}).get("api_rate_limit", 200.0))
             logger.info("Loaded rate limit from config: %.1f req/sec", rate_limit)
+            
             # Load seed queries
             seed_queries = load_seed_queries(config_path)
             logger.info("Loaded %d seed queries from config: %s", len(seed_queries), seed_queries)
+            
+            # Load max_articles from config if CLI arg is default (1000) or when called from pipeline
+            ingestion_cfg = config.get("ingestion", {})
+            if max_articles == 1000:  # Default CLI value - prefer config
+                config_max_articles = int(ingestion_cfg.get("max_articles", 1000))
+                logger.info("Using max_articles from config: %d (CLI default was %d)", config_max_articles, max_articles)
+            elif "max_articles" in ingestion_cfg:
+                # Even if CLI arg is provided, log what's in config for visibility
+                logger.info("CLI max_articles=%d, config has max_articles=%d (using CLI value)", 
+                           max_articles, ingestion_cfg.get("max_articles"))
+            
+            # Load per_query_limit from config if CLI arg is default (50) or when called from pipeline
+            if per_query_limit == 50:  # Default CLI value - prefer config
+                config_per_query_limit = int(ingestion_cfg.get("per_query_limit", 50))
+                logger.info("Using per_query_limit from config: %d (CLI default was %d)", config_per_query_limit, per_query_limit)
+            elif "per_query_limit" in ingestion_cfg:
+                logger.info("CLI per_query_limit=%d, config has per_query_limit=%d (using CLI value)",
+                           per_query_limit, ingestion_cfg.get("per_query_limit"))
+            
+            # Load max_workers from performance config (if CLI arg is default)
+            perf_cfg = config.get("performance", {})
+            if max_workers == 10:  # Default CLI value
+                config_max_workers = int(perf_cfg.get("max_workers", 8))
+                logger.info("Using max_workers from config: %d", config_max_workers)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not load config, using defaults: %s", exc)
+    
+    # Use configured values (config takes precedence when CLI uses defaults)
+    max_articles = config_max_articles
+    per_query_limit = config_per_query_limit
+    max_workers = config_max_workers
+    
+    logger.info("Final ingestion parameters: max_articles=%d, per_query_limit=%d, max_workers=%d",
+               max_articles, per_query_limit, max_workers)
 
     articles = await fetch_corpus_async(
         max_articles=max_articles,
@@ -496,7 +533,7 @@ def parse_args() -> argparse.Namespace:
         "--max-workers",
         type=int,
         default=10,
-        help="Maximum number of concurrent worker threads for mwclient calls (default: 10).",
+        help="Maximum concurrent workers (default: 10, or from config.yaml performance.max_workers).",
     )
     parser.add_argument(
         "--sample",

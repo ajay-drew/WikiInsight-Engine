@@ -7,12 +7,14 @@ Builds a multi-layer graph from Wikipedia articles with:
 """
 
 import logging
+from time import perf_counter
 from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -84,16 +86,25 @@ class KnowledgeGraphBuilder:
 
         # Layer 2: Cluster relationships
         if self.enable_cluster_edges:
+            logger.info("=" * 80)
             logger.info("Adding Layer 2 edges (cluster relationships)...")
+            logger.info("=" * 80)
+            layer2_start = perf_counter()
             layer2_count = self._add_cluster_edges(cluster_map, titles)
-            logger.info("Added %d Layer 2 edges", layer2_count)
+            layer2_time = perf_counter() - layer2_start
+            logger.info("Added %d Layer 2 edges in %.2f seconds", layer2_count, layer2_time)
         else:
             logger.info("Skipping Layer 2 edges (disabled)")
+            layer2_count = 0
 
         # Layer 3: Semantic relationships
+        logger.info("=" * 80)
         logger.info("Adding Layer 3 edges (semantic similarity)...")
+        logger.info("=" * 80)
+        layer3_start = perf_counter()
         layer3_count = self._add_semantic_edges(embeddings, titles, title_to_idx)
-        logger.info("Added %d Layer 3 edges", layer3_count)
+        layer3_time = perf_counter() - layer3_start
+        logger.info("Added %d Layer 3 edges in %.2f seconds", layer3_count, layer3_time)
 
         # Compute basic graph metrics
         total_edges = self.graph.number_of_edges()
@@ -127,12 +138,15 @@ class KnowledgeGraphBuilder:
                 cluster_to_titles[cluster_id].append(title)
 
         # For each cluster, connect all articles to each other
-        for cluster_id, titles in cluster_to_titles.items():
-            if len(titles) < 2:
+        total_clusters = len(cluster_to_titles)
+        logger.info("Processing %d clusters for cluster edges...", total_clusters)
+        
+        for cluster_id, cluster_titles in tqdm(cluster_to_titles.items(), desc="Adding cluster edges", unit="cluster"):
+            if len(cluster_titles) < 2:
                 continue
             # Connect each article to all others in the same cluster
-            for i, source in enumerate(titles):
-                for target in titles[i + 1 :]:
+            for i, source in enumerate(cluster_titles):
+                for target in cluster_titles[i + 1 :]:
                     if not self.graph.has_edge(source, target):
                         self.graph.add_edge(
                             source,
@@ -161,45 +175,67 @@ class KnowledgeGraphBuilder:
         titles: List[str],
         title_to_idx: Dict[str, int],
     ) -> int:
-        """Add Layer 3 edges: semantic similarity connections."""
+        """
+        Add Layer 3 edges: semantic similarity connections.
+        
+        Uses vectorized numpy operations for performance.
+        """
         edge_count = 0
 
         # Handle empty embeddings
         if len(embeddings) == 0 or len(titles) == 0:
             return 0
 
-        # Compute pairwise cosine similarity
-        logger.info("Computing pairwise cosine similarities...")
-        similarity_matrix = cosine_similarity(embeddings)
-
-        # Add edges for high similarity pairs
         n = len(titles)
-        for i in range(n):
-            for j in range(i + 1, n):
-                similarity = similarity_matrix[i][j]
-                if similarity >= self.semantic_threshold:
-                    source = titles[i]
-                    target = titles[j]
-                    # Add bidirectional edges for semantic relationships
-                    if not self.graph.has_edge(source, target):
-                        self.graph.add_edge(
-                            source,
-                            target,
-                            layer=3,
-                            weight=float(similarity),
-                            type="semantic",
-                        )
-                        edge_count += 1
-                    if not self.graph.has_edge(target, source):
-                        self.graph.add_edge(
-                            target,
-                            source,
-                            layer=3,
-                            weight=float(similarity),
-                            type="semantic",
-                        )
-                        edge_count += 1
-
+        
+        # Compute pairwise cosine similarity (vectorized)
+        logger.info("Computing pairwise cosine similarities for %d articles...", n)
+        logger.info("  - Embeddings shape: %s", embeddings.shape)
+        logger.info("  - Similarity matrix will be %dx%d", n, n)
+        
+        sim_start = perf_counter()
+        similarity_matrix = cosine_similarity(embeddings)
+        sim_time = perf_counter() - sim_start
+        logger.info("  - Similarity matrix computed in %.2f seconds", sim_time)
+        
+        # Use numpy to find pairs above threshold (vectorized)
+        # Only look at upper triangle to avoid duplicates
+        logger.info("Finding high-similarity pairs (threshold=%.2f)...", self.semantic_threshold)
+        
+        # Get indices where similarity >= threshold (upper triangle only)
+        upper_tri_indices = np.triu_indices(n, k=1)
+        similarities = similarity_matrix[upper_tri_indices]
+        
+        # Find pairs above threshold
+        filter_start = perf_counter()
+        high_sim_mask = similarities >= self.semantic_threshold
+        high_sim_i = upper_tri_indices[0][high_sim_mask]
+        high_sim_j = upper_tri_indices[1][high_sim_mask]
+        high_sim_values = similarities[high_sim_mask]
+        filter_time = perf_counter() - filter_start
+        logger.info("  - Filtered pairs in %.2f seconds", filter_time)
+        logger.info("  - Found %d high-similarity pairs to add as edges", len(high_sim_i))
+        
+        # Batch add edges (much faster than individual adds)
+        logger.info("Preparing edges for batch addition...")
+        edges_to_add = []
+        for idx in tqdm(range(len(high_sim_i)), desc="Preparing semantic edges", unit="pair"):
+            i, j = high_sim_i[idx], high_sim_j[idx]
+            source, target = titles[i], titles[j]
+            sim = float(high_sim_values[idx])
+            
+            # Add bidirectional edges
+            edges_to_add.append((source, target, {"layer": 3, "weight": sim, "type": "semantic"}))
+            edges_to_add.append((target, source, {"layer": 3, "weight": sim, "type": "semantic"}))
+        
+        # Bulk add edges
+        logger.info("Adding %d edges to graph (batch operation)...", len(edges_to_add))
+        add_start = perf_counter()
+        self.graph.add_edges_from(edges_to_add)
+        add_time = perf_counter() - add_start
+        logger.info("  - Edges added in %.2f seconds", add_time)
+        edge_count = len(edges_to_add)
+        
         return edge_count
 
     def get_graph(self) -> Optional[nx.DiGraph]:
