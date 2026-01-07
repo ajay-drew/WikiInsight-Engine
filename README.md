@@ -25,6 +25,9 @@ venv\Scripts\activate  # Windows | source venv/bin/activate  # Linux/Mac
 pip install -e .
 cd frontend && npm install && cd ..
 python ops/scripts/setup_nlp_resources.py
+# Copy env.example to .env and add your own database connection
+cp env.example .env
+# Edit .env and set DATABASE_URL to your PostgreSQL database
 ```
 
 ## Local Usage
