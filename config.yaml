@@ -7,8 +7,11 @@ ingestion:
   seed_queries:
   - Machine learning
   - Artificial intelligence
-  - Data science
-  per_query_limit: 35
+  - GPU
+  - Nvidia
+  - Google
+  - Microsoft
+  per_query_limit: 70
   max_articles: 1000
   max_links_per_article: 50
   stub_min_words: 200

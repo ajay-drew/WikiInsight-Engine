@@ -461,53 +461,32 @@ async def main_async(
     
     # Optional MLflow logging (wrapped in try-except to prevent crashes)
     try:
-        import mlflow
-        import yaml
+        from src.common.mlflow_utils import start_mlflow_run, log_params_safely, log_metrics_safely
         
-        config_path = "config.yaml"
-        if os.path.exists(config_path):
-            with open(config_path, "r") as f:
-                config = yaml.safe_load(f) or {}
-        else:
-            config = {}
-        
-        ml_cfg = config.get("mlops", {}).get("mlflow", {})
-        tracking_uri = ml_cfg.get("tracking_uri")
-        experiment_name = ml_cfg.get("experiment_name", "wikiinsight")
-        
-        # Only attempt MLflow logging if tracking URI is configured
-        if tracking_uri or experiment_name:
-            try:
-                if tracking_uri:
-                    mlflow.set_tracking_uri(tracking_uri)
-                if experiment_name:
-                    mlflow.set_experiment(experiment_name)
-                
-                with mlflow.start_run(run_name="ingestion"):
-                    # Log parameters
-                    mlflow.log_param("max_articles", max_articles)
-                    mlflow.log_param("per_query_limit", per_query_limit)
-                    mlflow.log_param("batch_size", batch_size)
-                    mlflow.log_param("max_workers", max_workers)
-                    mlflow.log_param("sample", sample is not None)
-                    mlflow.log_param("resume", resume)
-                    
-                    # Log metrics
-                    mlflow.log_metric("articles_fetched", total_articles)
-                    mlflow.log_metric("articles_filtered_stubs", stub_count)
-                    mlflow.log_metric("avg_article_length_words", avg_words)
-                    mlflow.log_metric("total_words", total_words)
-                    mlflow.log_metric("total_links", total_links)
-                    mlflow.log_metric("avg_links_per_article", avg_links)
-                    mlflow.log_metric("fetch_duration_seconds", duration)
-                    mlflow.log_metric("articles_per_second", total_articles / duration if duration > 0 else 0)
-                    
-                    logger.info("Logged ingestion metrics to MLflow")
-            except Exception as mlflow_exc:
-                # Log but don't crash - MLflow is optional
-                logger.warning("MLflow logging failed (non-critical): %s", mlflow_exc)
-        else:
-            logger.debug("MLflow not configured, skipping logging")
+        with start_mlflow_run("ingestion"):
+            # Log parameters
+            log_params_safely({
+                "max_articles": max_articles,
+                "per_query_limit": per_query_limit,
+                "batch_size": batch_size,
+                "max_workers": max_workers,
+                "sample": sample is not None,
+                "resume": resume,
+            })
+            
+            # Log metrics
+            log_metrics_safely({
+                "articles_fetched": total_articles,
+                "articles_filtered_stubs": stub_count,
+                "avg_article_length_words": avg_words,
+                "total_words": total_words,
+                "total_links": total_links,
+                "avg_links_per_article": avg_links,
+                "fetch_duration_seconds": duration,
+                "articles_per_second": total_articles / duration if duration > 0 else 0,
+            })
+            
+            logger.info("Logged ingestion metrics to MLflow")
     except ImportError:
         logger.debug("MLflow not installed, skipping logging")
     except Exception as exc:

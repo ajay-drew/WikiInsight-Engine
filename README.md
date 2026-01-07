@@ -35,6 +35,7 @@ cp env.example .env
 ```bash
 ops/run_dvc_tools.cmd     # DVC pipeline + MLflow
 run_app.cmd               # FastAPI + React
+ops/start_mlflow_ui.cmd   # MLflow UI (separate terminal)
 # Or: dvc repro && ops/run_app.cmd
 ```
 
