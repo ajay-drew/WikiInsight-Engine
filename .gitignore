@@ -42,6 +42,7 @@ ENV/
 notebooks/
 
 # Data & Models
+# Exclude all data files (should be generated/loaded in production)
 data/raw/*
 data/processed/*
 data/features/*
@@ -50,12 +51,17 @@ data/graph/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/features/.gitkeep
+!data/entities/.gitkeep
+!data/graph/.gitkeep
+# Model files (should be trained/generated in production)
 models/**/*.pkl
 models/**/*.pt
 models/**/*.h5
 models/**/*.onnx
 *.model
 *.weights
+# Parquet files (data artifacts)
+*.parquet
 
 .cursorrules
 # Environment variables
@@ -69,10 +75,25 @@ logs/
 *.out
 .cursor/
 data/pipeline_progress.json
+# Local state and cache
+.cache/
+*.cache
 
 # Local databases and ML runs
+# SQLite database files (all variants)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+# Specific database files
 mlflow.db
 mlflow.db.backup
+pipeline_logs.db
+pipeline_logs.db-shm
+pipeline_logs.db-wal
 mlruns/
 
 # OS
