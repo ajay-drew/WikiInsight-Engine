@@ -9,8 +9,6 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 import networkx as nx
-import numpy as np
-
 from .knowledge_graph import KnowledgeGraphBuilder
 
 logger = logging.getLogger(__name__)

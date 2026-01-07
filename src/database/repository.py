@@ -8,7 +8,6 @@ clusters, and graph edges with pgvector similarity search.
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 

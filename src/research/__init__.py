@@ -1,6 +1,4 @@
-"""
-Research and entity linking utilities for WikiInsight Engine.
+"""Legacy research module retained for backward imports."""
 
-This module provides Wikidata entity linking functionality.
-"""
+from research.wikidata_linker import *  # noqa: F401,F403
 

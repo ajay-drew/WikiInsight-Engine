@@ -10,7 +10,6 @@ import asyncio
 import logging
 import random
 import time
-from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 

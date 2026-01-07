@@ -8,7 +8,7 @@ Builds a multi-layer graph from Wikipedia articles with:
 
 import logging
 from time import perf_counter
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional
 
 import networkx as nx
 import numpy as np

@@ -2,6 +2,61 @@ name: CI
 
 on:
   push:
+    branches: ["main", "master"]
+  pull_request:
+
+jobs:
+  backend-tests:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: pytest tests --maxfail=1 --disable-warnings -q
+
+  frontend-tests:
+    name: Frontend (vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "frontend/package-lock.json"
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-progress
+
+      - name: Run unit tests
+        env:
+          CI: "true"
+        run: npm run test -- --runInBand --reporter=basic
+name: CI
+
+on:
+  push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]

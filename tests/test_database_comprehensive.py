@@ -48,30 +48,6 @@ class TestDatabaseConnection:
             manager = DatabaseManager()
             assert manager.database_url == test_url
     
-    def test_database_manager_get_url_from_config(self):
-        """Test database URL retrieval from config file."""
-        import yaml
-        import tempfile
-        import os
-        
-        test_url = "postgresql+asyncpg://config:pass@localhost:5432/configdb"
-        config_data = {"database": {"url": test_url}}
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(config_data, f)
-            config_path = f.name
-        
-        try:
-            with patch("src.database.connection.os.path.exists", return_value=True):
-                with patch("src.database.connection.os.environ.get", return_value=None):
-                    with patch("builtins.open", create=True) as mock_open:
-                        mock_open.return_value.__enter__.return_value.read.return_value = yaml.dump(config_data)
-                        manager = DatabaseManager()
-                        # URL should be retrieved from config
-        finally:
-            if os.path.exists(config_path):
-                os.unlink(config_path)
-    
     def test_database_manager_default_url(self):
         """Test default database URL."""
         with patch.dict(os.environ, {}, clear=True):

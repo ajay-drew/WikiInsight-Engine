@@ -7,7 +7,6 @@ the appropriate device for embeddings and clustering using PyTorch/CuPy.
 
 import json
 import logging
-import os
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)

@@ -1,10 +1,17 @@
 import React, { useEffect, useState } from "react";
 import { connectPipelineProgress, PipelineConfig, PipelineProgress, startPipeline, getPipelineLogs, deletePipelineLogs, PipelineLogEntry } from "../lib/api";
+import { usePersistentState } from "../hooks/usePersistentState";
 
 export function IngestionPage() {
-  const [queries, setQueries] = useState<string[]>(["Machine learning", "Artificial intelligence", "Data science"]);
-  const [perQueryLimit, setPerQueryLimit] = useState<number>(50);
-  const [maxArticles, setMaxArticles] = useState<number>(1000);
+  const [config, setConfig] = usePersistentState<{
+    queries: string[];
+    perQueryLimit: number;
+    maxArticles: number;
+  }>("ingestionConfig", {
+    queries: ["Machine learning", "Artificial intelligence", "Data science"],
+    perQueryLimit: 50,
+    maxArticles: 1000,
+  });
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,8 +20,8 @@ export function IngestionPage() {
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
 
   // Calculate total potential articles
-  const totalPotential = queries.length * perQueryLimit;
-  const actualMax = Math.min(totalPotential, maxArticles);
+  const totalPotential = config.queries.length * config.perQueryLimit;
+  const actualMax = Math.min(totalPotential, config.maxArticles);
 
   useEffect(() => {
     // Delete all logs on page load (webpage reload)
@@ -54,38 +61,43 @@ export function IngestionPage() {
   }, [isRunning]);
 
   function handleAddQuery() {
-    if (queries.length < 6) {
-      setQueries([...queries, ""]);
+    if (config.queries.length < 6) {
+      setConfig((prev) => ({ ...prev, queries: [...prev.queries, ""] }));
     }
   }
 
   function handleRemoveQuery(index: number) {
-    if (queries.length > 3) {
-      setQueries(queries.filter((_, i) => i !== index));
+    if (config.queries.length > 3) {
+      setConfig((prev) => ({
+        ...prev,
+        queries: prev.queries.filter((_, i) => i !== index),
+      }));
     }
   }
 
   function handleQueryChange(index: number, value: string) {
-    const newQueries = [...queries];
-    newQueries[index] = value;
-    setQueries(newQueries);
+    setConfig((prev) => {
+      const newQueries = [...prev.queries];
+      newQueries[index] = value;
+      return { ...prev, queries: newQueries };
+    });
   }
 
   function validateConfig(): string | null {
-    if (queries.length < 3 || queries.length > 6) {
+    if (config.queries.length < 3 || config.queries.length > 6) {
       return "Must have 3-6 seed queries";
     }
-    if (queries.some(q => !q.trim())) {
+    if (config.queries.some((q) => !q.trim())) {
       return "All queries must be non-empty";
     }
-    if (perQueryLimit < 1 || perQueryLimit > 70) {
+    if (config.perQueryLimit < 1 || config.perQueryLimit > 70) {
       return "Per-query limit must be between 1 and 70";
     }
-    if (maxArticles < 50) {
+    if (config.maxArticles < 50) {
       return "Max articles must be at least 50 for meaningful clustering. Please increase max articles or adjust your seed queries/per-query limit.";
     }
-    if (totalPotential > maxArticles) {
-      return `Total potential articles (${totalPotential}) exceeds max (${maxArticles}). System will cap at ${maxArticles}.`;
+    if (totalPotential > config.maxArticles) {
+      return `Total potential articles (${totalPotential}) exceeds max (${config.maxArticles}). System will cap at ${config.maxArticles}.`;
     }
     return null;
   }
@@ -103,18 +115,42 @@ export function IngestionPage() {
     try {
       // Start pipeline
       await startPipeline({
-        seed_queries: queries.filter(q => q.trim()),
-        per_query_limit: perQueryLimit,
-        max_articles: maxArticles,
+        seed_queries: config.queries.filter((q) => q.trim()),
+        per_query_limit: config.perQueryLimit,
+        max_articles: config.maxArticles,
       });
 
       // Connect to SSE stream
       const es = connectPipelineProgress();
       setEventSource(es);
 
+      es.onopen = () => {
+        console.log("SSE connection opened");
+        setError(null);
+      };
+
       es.onmessage = async (event) => {
         try {
+          // Ignore keep-alive comments
+          if (event.data.trim() === "" || event.data.startsWith(":")) {
+            return;
+          }
+
           const progressData = JSON.parse(event.data) as PipelineProgress;
+          
+          // Handle special event types
+          if (progressData.type === "reload") {
+            console.log("Data reload:", progressData.message);
+            // Don't update progress, just log the reload message
+            return;
+          }
+
+          if (progressData.type === "error") {
+            console.warn("Stream error:", progressData.message);
+            // Don't close connection on stream errors - allow it to recover
+            return;
+          }
+
           setProgress(progressData);
 
           // Fetch logs from database
@@ -136,8 +172,11 @@ export function IngestionPage() {
           );
           if (allDone) {
             setIsRunning(false);
-            es.close();
-            setEventSource(null);
+            // Wait a moment before closing to ensure final message is received
+            setTimeout(() => {
+              es.close();
+              setEventSource(null);
+            }, 1000);
             // Final log fetch
             try {
               const logsResponse = await getPipelineLogs();
@@ -150,15 +189,27 @@ export function IngestionPage() {
           }
         } catch (err) {
           console.error("Failed to parse progress:", err);
+          // Don't close connection on parse errors - might be temporary
         }
       };
 
       es.onerror = (err) => {
         console.error("SSE connection error:", err);
-        setError("Lost connection to progress stream");
-        setIsRunning(false);
-        es.close();
-        setEventSource(null);
+        // EventSource automatically attempts to reconnect
+        // Only show error if connection is actually closed and not recovering
+        if (es.readyState === EventSource.CLOSED) {
+          setError("Lost connection to progress stream. EventSource will attempt to reconnect automatically.");
+          // EventSource will automatically try to reconnect, so we don't need manual reconnection
+          // Just update the error message to be less alarming
+          setTimeout(() => {
+            if (es.readyState === EventSource.CONNECTING || es.readyState === EventSource.OPEN) {
+              setError(null); // Clear error if reconnected
+            }
+          }, 5000);
+        } else if (es.readyState === EventSource.CONNECTING) {
+          // Connection is reconnecting - clear error
+          setError(null);
+        }
       };
     } catch (err: any) {
       setError(err.message || "Failed to start pipeline");
@@ -191,10 +242,10 @@ export function IngestionPage() {
       <div className="border border-slate-800 rounded-lg p-6 bg-slate-900/70 space-y-4">
         <div>
           <label className="block text-sm font-medium mb-2">
-            Seed Queries ({queries.length}/6)
+            Seed Queries ({config.queries.length}/6)
           </label>
           <div className="space-y-2">
-            {queries.map((query, index) => (
+            {config.queries.map((query, index) => (
               <div key={index} className="flex gap-2">
                 <input
                   type="text"
@@ -204,7 +255,7 @@ export function IngestionPage() {
                   className="flex-1 px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
                   disabled={isRunning}
                 />
-                {queries.length > 3 && (
+                {config.queries.length > 3 && (
                   <button
                     onClick={() => handleRemoveQuery(index)}
                     className="px-3 py-2 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 text-sm"
@@ -216,7 +267,7 @@ export function IngestionPage() {
               </div>
             ))}
           </div>
-          {queries.length < 6 && (
+          {config.queries.length < 6 && (
             <button
               onClick={handleAddQuery}
               className="mt-2 px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm"
@@ -229,14 +280,14 @@ export function IngestionPage() {
 
         <div>
           <label className="block text-sm font-medium mb-2">
-            Per-Query Limit: {perQueryLimit} articles
+            Per-Query Limit: {config.perQueryLimit} articles
           </label>
           <input
             type="range"
             min="1"
             max="70"
-            value={perQueryLimit}
-            onChange={(e) => setPerQueryLimit(parseInt(e.target.value))}
+            value={config.perQueryLimit}
+            onChange={(e) => setConfig((prev) => ({ ...prev, perQueryLimit: parseInt(e.target.value) }))}
             className="w-full"
             disabled={isRunning}
           />
@@ -248,15 +299,15 @@ export function IngestionPage() {
 
         <div>
           <label className="block text-sm font-medium mb-2">
-            Max Articles: {maxArticles}
+            Max Articles: {config.maxArticles}
           </label>
           <input
             type="range"
             min="10"
             max="1000"
             step="10"
-            value={maxArticles}
-            onChange={(e) => setMaxArticles(parseInt(e.target.value))}
+            value={config.maxArticles}
+            onChange={(e) => setConfig((prev) => ({ ...prev, maxArticles: parseInt(e.target.value) }))}
             className="w-full"
             disabled={isRunning}
           />
@@ -273,9 +324,9 @@ export function IngestionPage() {
           <div className="flex justify-between items-center text-sm">
             <span className="text-slate-400">Total Potential Articles:</span>
             <span className="font-mono text-sky-400">
-              {totalPotential > maxArticles ? (
+              {totalPotential > config.maxArticles ? (
                 <>
-                  <span className="text-yellow-400">{totalPotential}</span> → {maxArticles} (capped)
+                  <span className="text-yellow-400">{totalPotential}</span> → {config.maxArticles} (capped)
                 </>
               ) : (
                 totalPotential

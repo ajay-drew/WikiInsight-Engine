@@ -3,23 +3,32 @@ import { ClusterSummary, fetchClustersOverview, fetchClusterSummary, fetchGraphV
 import { KnowledgeGraph } from "../components/KnowledgeGraph";
 import { GraphControls } from "../components/GraphControls";
 import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
+import { usePersistentState } from "../hooks/usePersistentState";
 
 export function ClustersOverviewPage() {
   const [clusters, setClusters] = useState<ClusterSummary[]>([]);
   const [selectedCluster, setSelectedCluster] = useState<ClusterSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"table" | "graph">("table");
+  const [persistentUI, setPersistentUI] = usePersistentState<{
+    activeTab: "table" | "graph";
+    selectedClusterId: number | null;
+    searchQuery: string;
+    showLayers: { cluster: boolean; semantic: boolean };
+    sortColumn: "name" | "size" | "id";
+    sortDirection: "asc" | "desc";
+  }>("clustersPageState", {
+    activeTab: "table",
+    selectedClusterId: null,
+    searchQuery: "",
+    showLayers: { cluster: true, semantic: true },
+    sortColumn: "id",
+    sortDirection: "asc",
+  });
+  const { activeTab, selectedClusterId, searchQuery, showLayers, sortColumn, sortDirection } = persistentUI;
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState<string | null>(null);
-  const [showLayers, setShowLayers] = useState({
-    cluster: true,
-    semantic: true,
-  });
-  const [searchQuery, setSearchQuery] = useState("");
-  const [sortColumn, setSortColumn] = useState<"name" | "size" | "id">("id");
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
 
   useEffect(() => {
     void loadOverview();
@@ -31,10 +40,11 @@ export function ClustersOverviewPage() {
     try {
       const data = await fetchClustersOverview();
       setClusters(data);
-      if (data.length > 0) {
-        const firstId = data[0].cluster_id;
-        const full = await fetchClusterSummary(firstId);
+      const targetId = persistentUI.selectedClusterId ?? (data.length > 0 ? data[0].cluster_id : null);
+      if (targetId !== null) {
+        const full = await fetchClusterSummary(targetId);
         setSelectedCluster(full);
+        setPersistentUI((prev) => ({ ...prev, selectedClusterId: targetId }));
       }
     } catch (err: any) {
       setError(err.message || "Failed to load clusters overview.");
@@ -48,6 +58,7 @@ export function ClustersOverviewPage() {
     try {
       const summary = await fetchClusterSummary(id);
       setSelectedCluster(summary);
+      setPersistentUI((prev) => ({ ...prev, selectedClusterId: id }));
       
       // Load graph data if graph tab is active
       if (activeTab === "graph") {
@@ -133,11 +144,17 @@ export function ClustersOverviewPage() {
   function handleSort(column: "name" | "size" | "id") {
     if (sortColumn === column) {
       // Toggle direction if same column
-      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+      setPersistentUI((prev) => ({
+        ...prev,
+        sortDirection: sortDirection === "asc" ? "desc" : "asc",
+      }));
     } else {
       // New column, default to ascending
-      setSortColumn(column);
-      setSortDirection("asc");
+      setPersistentUI((prev) => ({
+        ...prev,
+        sortColumn: column,
+        sortDirection: "asc",
+      }));
     }
   }
 
@@ -187,7 +204,7 @@ export function ClustersOverviewPage() {
         {/* Tab selector */}
         <div className="flex gap-2 border-b border-slate-800">
           <button
-            onClick={() => setActiveTab("table")}
+            onClick={() => setPersistentUI((prev) => ({ ...prev, activeTab: "table" }))}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === "table"
                 ? "text-sky-400 border-b-2 border-sky-400"
@@ -197,7 +214,7 @@ export function ClustersOverviewPage() {
             Table View
           </button>
           <button
-            onClick={() => setActiveTab("graph")}
+            onClick={() => setPersistentUI((prev) => ({ ...prev, activeTab: "graph" }))}
             className={`px-4 py-2 text-sm font-medium transition-colors ${
               activeTab === "graph"
                 ? "text-sky-400 border-b-2 border-sky-400"
@@ -376,17 +393,17 @@ export function ClustersOverviewPage() {
               <GraphControls
                 showLayers={showLayers}
                 onLayerToggle={(layer) => {
-                  setShowLayers((prev) => ({
+                  setPersistentUI((prev) => ({
                     ...prev,
-                    [layer]: !prev[layer],
+                    showLayers: { ...prev.showLayers, [layer]: !prev.showLayers[layer] },
                   }));
                 }}
                 onResetView={() => {
-                  setSearchQuery("");
+                  setPersistentUI((prev) => ({ ...prev, searchQuery: "" }));
                   // ReactFlow will handle view reset via fitView
                 }}
                 searchQuery={searchQuery}
-                onSearchChange={setSearchQuery}
+                onSearchChange={(value) => setPersistentUI((prev) => ({ ...prev, searchQuery: value }))}
               />
 
               {selectedCluster && (

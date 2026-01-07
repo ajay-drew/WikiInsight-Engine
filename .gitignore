@@ -45,6 +45,8 @@ notebooks/
 data/raw/*
 data/processed/*
 data/features/*
+data/entities/*
+data/graph/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/features/.gitkeep
@@ -61,10 +63,17 @@ models/**/*.onnx
 .env.local
 .env.*.local
 
-# Logs
+# Logs and local state
 *.log
 logs/
 *.out
+.cursor/
+data/pipeline_progress.json
+
+# Local databases and ML runs
+mlflow.db
+mlflow.db.backup
+mlruns/
 
 # OS
 .DS_Store
@@ -92,6 +101,7 @@ phases/
 # Node.js / Frontend
 node_modules/
 frontend/node_modules/
+frontend/.out/
 *.log
 npm-debug.log*
 yarn-debug.log*

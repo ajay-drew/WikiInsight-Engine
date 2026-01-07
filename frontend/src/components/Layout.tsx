@@ -1,12 +1,11 @@
 import React from "react";
+import { NavLink, Outlet } from "react-router-dom";
 
-type LayoutProps = {
-  activePage: "lookup" | "clusters" | "search" | "monitoring" | "ingestion";
-  onChangePage: (page: "lookup" | "clusters" | "search" | "monitoring" | "ingestion") => void;
-  children: React.ReactNode;
-};
+const linkClasses =
+  "px-3 py-1.5 rounded text-sm transition-colors bg-slate-800 text-slate-200 hover:bg-slate-700";
+const activeLinkClasses = "bg-sky-500 text-white";
 
-export function Layout({ activePage, onChangePage, children }: LayoutProps) {
+export function Layout() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur">
@@ -18,62 +17,60 @@ export function Layout({ activePage, onChangePage, children }: LayoutProps) {
             </span>
           </div>
           <nav className="flex gap-2">
-            <button
-              onClick={() => onChangePage("search")}
-              className={`px-3 py-1.5 rounded text-sm transition-colors ${
-                activePage === "search"
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
-              }`}
+            <NavLink
+              to="/search"
+              className={({ isActive }) => `${linkClasses} ${isActive ? activeLinkClasses : ""}`.trim()}
             >
               Search
-            </button>
-            <button
-              onClick={() => onChangePage("lookup")}
-              className={`px-3 py-1.5 rounded text-sm transition-colors ${
-                activePage === "lookup"
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
-              }`}
+            </NavLink>
+            <NavLink
+              to="/lookup"
+              className={({ isActive }) => `${linkClasses} ${isActive ? activeLinkClasses : ""}`.trim()}
             >
               Topic Lookup
-            </button>
-            <button
-              onClick={() => onChangePage("clusters")}
-              className={`px-3 py-1.5 rounded text-sm transition-colors ${
-                activePage === "clusters"
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
-              }`}
+            </NavLink>
+            <NavLink
+              to="/clusters"
+              className={({ isActive }) => `${linkClasses} ${isActive ? activeLinkClasses : ""}`.trim()}
             >
               Clusters
-            </button>
-            <button
-              onClick={() => onChangePage("monitoring")}
-              className={`px-3 py-1.5 rounded text-sm transition-colors ${
-                activePage === "monitoring"
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
-              }`}
+            </NavLink>
+            <NavLink
+              to="/monitoring"
+              className={({ isActive }) => `${linkClasses} ${isActive ? activeLinkClasses : ""}`.trim()}
             >
               Monitoring
-            </button>
-            <button
-              onClick={() => onChangePage("ingestion")}
-              className={`px-3 py-1.5 rounded text-sm transition-colors ${
-                activePage === "ingestion"
-                  ? "bg-sky-500 text-white"
-                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
-              }`}
+            </NavLink>
+            <NavLink
+              to="/ingestion"
+              className={({ isActive }) => `${linkClasses} ${isActive ? activeLinkClasses : ""}`.trim()}
             >
               Ingestion
-            </button>
+            </NavLink>
           </nav>
         </div>
       </header>
-      <main className="flex-1 max-w-6xl mx-auto px-4 py-6">{children}</main>
+      <main className="flex-1 max-w-6xl mx-auto px-4 py-6">
+        <Outlet />
+      </main>
       <footer className="border-t border-slate-800 text-xs text-slate-500 py-3 text-center">
-        Backend: FastAPI · Frontend: React + Vite + Tailwind
+        Built by:{" "}
+        <a href="mailto:drewjay05@gmail.com" className="text-sky-400 hover:text-sky-300">
+          Ajay A
+        </a>{" "}
+        ·{" "}
+        <a href="mailto:drewjay05@gmail.com" className="text-sky-400 hover:text-sky-300">
+          drewjay05@gmail.com
+        </a>{" "}
+        ·{" "}
+        <a
+          href="https://www.linkedin.com/in/ajay-drew"
+          className="text-sky-400 hover:text-sky-300"
+          target="_blank"
+          rel="noreferrer"
+        >
+          linkedin.com/in/ajay-drew
+        </a>
       </footer>
     </div>
   );

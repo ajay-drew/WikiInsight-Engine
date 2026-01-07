@@ -7,8 +7,6 @@ Logs are automatically deleted when the webpage is reloaded (via API endpoint).
 
 import sqlite3
 import threading
-import time
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional

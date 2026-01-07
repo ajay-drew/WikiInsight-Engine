@@ -15,7 +15,6 @@ from typing import Dict
 import numpy as np
 import pandas as pd
 import yaml
-from tqdm import tqdm
 
 from src.common.logging_utils import setup_logging
 from src.common.pipeline_progress import update_progress, mark_stage_completed, mark_stage_error

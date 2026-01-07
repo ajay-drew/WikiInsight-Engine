@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: wikiinsight-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wikiinsight
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Initialize pgvector extension on first run
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wikiinsight-network
+    restart: unless-stopped
+
+  # WikiInsight API Backend
+  api:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile
+    container_name: wikiinsight-api
+    ports:
+      - "9000:9000"
+    volumes:
+      # Persist data across container restarts
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../mlruns:/app/mlruns
+      - ../logs:/app/logs
+      - ../mlflow.db:/app/mlflow.db
+      - ../pipeline_logs.db:/app/pipeline_logs.db
+      - ../config.yaml:/app/config.yaml
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+      - API_HOST=0.0.0.0
+      - API_PORT=9000
+      # Database connection (use service name for internal networking)
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/wikiinsight
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - wikiinsight-network
+
+  # Optional: MLflow Tracking Server
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    container_name: wikiinsight-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ../mlruns:/mlflow/mlruns
+      - ../mlflow.db:/mlflow/mlflow.db
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root file:///mlflow/mlruns
+    networks:
+      - wikiinsight-network
+    restart: unless-stopped
+    profiles:
+      - mlflow  # Only start with --profile mlflow flag
+
+networks:
+  wikiinsight-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

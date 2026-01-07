@@ -5,12 +5,9 @@ Calculates drift scores between baseline and current data,
 stores metrics in MLflow, and generates drift reports.
 """
 
-import json
 import logging
 import os
-from typing import Dict, Optional
-
-import pandas as pd
+from typing import Dict
 
 from src.common.mlflow_utils import log_metrics_safely, start_mlflow_run
 from src.monitoring.drift_detector import detect_drift_from_files

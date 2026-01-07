@@ -17,20 +17,8 @@ import sys
 import uuid
 from typing import Optional
 
-from src.common.pipeline_progress import (
-    get_progress,
-    mark_stage_error,
-    mark_stage_completed,
-    update_progress,
-)
-from src.common.pipeline_logs_db import (
-    create_run,
-    update_run_status,
-    add_log,
-    get_current_run,
-    delete_all_runs,
-    DatabaseLogHandler,
-)
+from src.common.pipeline_progress import mark_stage_error, mark_stage_completed, update_progress
+from src.common.pipeline_logs_db import create_run, update_run_status, add_log, DatabaseLogHandler
 
 logger = logging.getLogger(__name__)
 
@@ -219,11 +207,7 @@ def run_full_pipeline() -> bool:
     
     try:
         from src.common.gpu_utils import (
-            log_device_info,
-            verify_gpu_usage,
-            is_cuda_available,
-            get_clustering_backend,
-        )
+            log_device_info, verify_gpu_usage, get_clustering_backend)
         from src.preprocessing.embeddings import detect_device
         
         logger.info("")
@@ -372,13 +356,15 @@ def run_full_pipeline() -> bool:
             import requests
 
             logger.info("Sending POST request to API reload endpoint...")
+            logger.info("  - Note: Data reload may take several minutes for large datasets")
             # #region agent log
             try:
                 with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
                     f.write(json.dumps({"sessionId": "debug-session", "runId": "run1", "hypothesisId": "A", "location": "pipeline_orchestrator.py:273", "message": "Sending POST request to reload endpoint", "data": {"url": reload_url}, "timestamp": __import__("time").time() * 1000}) + "\n")
             except: pass
             # #endregion
-            resp = requests.post(reload_url, timeout=30)
+            # Increased timeout to 10 minutes (600 seconds) to handle large data loading
+            resp = requests.post(reload_url, timeout=600)
             # #region agent log
             try:
                 with open("x:\\majorProjects\\WikiInsight-Engine\\.cursor\\debug.log", "a") as f:
@@ -401,6 +387,15 @@ def run_full_pipeline() -> bool:
                 logger.warning("API reload returned non-200 status: %s", resp.status_code)
                 logger.warning("Response: %s", resp.text[:500])
                 logger.warning("=" * 80)
+        except requests.exceptions.Timeout as exc:
+            logger.warning("=" * 80)
+            logger.warning("API reload request timed out after 10 minutes")
+            logger.warning("  - URL: %s", reload_url)
+            logger.warning("  - Error: %s", exc)
+            logger.warning("  - Note: Data reload is still in progress on the server")
+            logger.warning("  - The API will be ready once reload completes (check server logs)")
+            logger.warning("  - You can manually trigger reload later via POST /api/pipeline/reload")
+            logger.warning("=" * 80)
         except requests.exceptions.ConnectionError as exc:
             logger.warning("=" * 80)
             logger.warning("API server is not running or not accessible")

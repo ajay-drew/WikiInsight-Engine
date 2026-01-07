@@ -101,7 +101,7 @@ async def _load_all_data() -> None:
         
         if use_pgvector:
             logger.info("Attempting to initialize DatabaseSearchEngine (PostgreSQL + pgvector)...")
-            from src.database.connection import init_database, get_db_manager
+            from src.database.connection import init_database
             from src.preprocessing.embeddings import EmbeddingGenerator
             
             # Initialize database
@@ -238,6 +238,13 @@ async def _load_all_data() -> None:
                 logger.info("Initializing HybridSearchEngine with %d articles and embeddings shape %s...", 
                            len(articles), embeddings.shape)
                 engine_init_start = perf_counter()
+                
+                # Get max_workers from config for parallel processing
+                perf_cfg = config.get("performance", {})
+                max_workers = perf_cfg.get("max_workers", None)
+                if max_workers is not None:
+                    max_workers = int(max_workers)
+                
                 _search_engine = HybridSearchEngine(
                     articles=articles,
                     embeddings=embeddings,
@@ -245,6 +252,7 @@ async def _load_all_data() -> None:
                     use_nltk_normalization=use_nltk_normalization,
                     title_weight=title_weight,
                     body_weight=body_weight,
+                    max_workers=max_workers,
                 )
                 engine_init_time = perf_counter() - engine_init_start
                 search_engine_time = perf_counter() - search_engine_start
@@ -709,10 +717,10 @@ async def api_clusters_overview(request: Request):
     """API-prefixed alias for /clusters/overview endpoint."""
     try:
         return await clusters_overview(request)
-    except HTTPException as e:
+    except HTTPException:
         # Re-raise HTTPException as-is (includes 503 for unavailable service)
         raise
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error in api_clusters_overview")
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -762,7 +770,7 @@ async def get_graph_neighbors(request: Request, article_title: str):
     try:
         neighbors = _graph_service.get_neighbors(article_title)
         return {"article_title": article_title, "neighbors": neighbors}
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error getting graph neighbors for '%s'", article_title)
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -785,7 +793,7 @@ async def get_graph_path(request: Request, from_title: str, to_title: str):
             "path": path,
             "found": path is not None,
         }
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error finding path from '%s' to '%s'", from_title, to_title)
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -825,7 +833,7 @@ async def get_graph_visualization(request: Request, cluster_id: int):
             status_code=404,
             detail=f"Cluster {cluster_id} not found.",
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error getting graph visualization for cluster %d", cluster_id)
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -843,7 +851,7 @@ async def get_article_graph(request: Request, article_title: str):
     try:
         nodes, edges = _graph_service.get_article_graph(article_title)
         return {"nodes": nodes, "edges": edges}
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error getting article graph for '%s'", article_title)
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1002,7 +1010,7 @@ async def api_search(request: Request, body: SearchRequest):
             results=results,
             total_results=len(results),
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Error performing search for query '%s'", body.query)
         raise HTTPException(status_code=500, detail="Internal server error during search")
 
@@ -1141,15 +1149,12 @@ async def start_pipeline(request: Request, body: PipelineConfigRequest):
         logger.info("Old data cleared in %.2f seconds", clear_time)
         
         # Load existing config
-        config_load_start = perf_counter()
         config_path = "config.yaml"
         if os.path.exists(config_path):
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f) or {}
         else:
             config = {}
-        config_load_time = perf_counter() - config_load_start
-        
         # Update ingestion config
         config_update_start = perf_counter()
         if "ingestion" not in config:
@@ -1293,56 +1298,90 @@ async def stream_pipeline_progress(request: Request):
         """Generate SSE events with progress updates."""
         last_progress = None
         reloaded = False
+        keep_alive_counter = 0
+        max_keep_alive_interval = 30  # Send keep-alive every 30 seconds
         
-        while True:
-            try:
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    break
-                
-                # Get current progress
-                current_progress = get_pipeline_progress()
-                
-                # Only send if progress changed
-                if current_progress != last_progress:
-                    # Format as SSE event
-                    progress_json = json.dumps(current_progress)
-                    yield f"data: {progress_json}\n\n"
-                    last_progress = current_progress
-                
-                # Check if pipeline is complete
-                if current_progress.get("current_stage") is None:
-                    # Check if all stages are completed or error
-                    stages = current_progress.get("stages", {})
-                    all_done = all(
-                        stage.get("status") in ("completed", "error")
-                        for stage in stages.values()
-                    )
-                    if all_done and not reloaded:
-                        # Reload data when pipeline completes
-                        try:
-                            await _load_all_data()
-                            reloaded = True
-                            # Send reload notification
-                            reload_event = json.dumps({
-                                "type": "reload",
-                                "status": "completed",
-                                "message": "Data reloaded successfully"
-                            })
-                            yield f"data: {reload_event}\n\n"
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning("Failed to auto-reload data: %s", exc)
-                        
-                        # Send final update and close
-                        yield f"data: {json.dumps(current_progress)}\n\n"
+        try:
+            # Send initial connection message
+            yield ": connected\n\n"
+            
+            while True:
+                try:
+                    # Check if client disconnected
+                    if await request.is_disconnected():
+                        logger.info("SSE client disconnected")
                         break
-                
-                # Wait before next update (1-2 seconds)
-                await asyncio.sleep(1.5)
-                
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Error in SSE stream: %s", exc)
-                break
+                    
+                    # Get current progress
+                    current_progress = get_pipeline_progress()
+                    
+                    # Only send if progress changed
+                    if current_progress != last_progress:
+                        # Format as SSE event
+                        progress_json = json.dumps(current_progress)
+                        yield f"data: {progress_json}\n\n"
+                        last_progress = current_progress
+                        keep_alive_counter = 0  # Reset counter on progress update
+                    
+                    # Send keep-alive comment periodically to prevent connection timeout
+                    keep_alive_counter += 1
+                    if keep_alive_counter >= max_keep_alive_interval:
+                        yield ": keep-alive\n\n"
+                        keep_alive_counter = 0
+                    
+                    # Check if pipeline is complete
+                    if current_progress.get("current_stage") is None:
+                        # Check if all stages are completed or error
+                        stages = current_progress.get("stages", {})
+                        all_done = all(
+                            stage.get("status") in ("completed", "error")
+                            for stage in stages.values()
+                        )
+                        if all_done and not reloaded:
+                            # Notify that reload is starting (but don't block the stream)
+                            reload_start_event = json.dumps({
+                                "type": "reload",
+                                "status": "starting",
+                                "message": "Starting data reload (this may take several minutes)..."
+                            })
+                            yield f"data: {reload_start_event}\n\n"
+                            
+                            # Start reload in background (non-blocking)
+                            async def background_reload():
+                                try:
+                                    await _load_all_data()
+                                    logger.info("Background data reload completed successfully")
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.exception("Background data reload failed: %s", exc)
+                            
+                            # Start background task but don't wait for it
+                            asyncio.create_task(background_reload())
+                            reloaded = True
+                            
+                            # Send final update but keep connection open for a bit
+                            yield f"data: {json.dumps(current_progress)}\n\n"
+                            
+                            # Wait a bit before closing to ensure final message is received
+                            await asyncio.sleep(2)
+                            break
+                    
+                    # Wait before next update (1-2 seconds)
+                    await asyncio.sleep(1.5)
+                    
+                except asyncio.CancelledError:
+                    logger.info("SSE stream cancelled")
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Error in SSE stream: %s", exc)
+                    # Send error event but don't break immediately - allow reconnection
+                    error_event = json.dumps({
+                        "type": "error",
+                        "message": f"Stream error: {str(exc)}"
+                    })
+                    yield f"data: {error_event}\n\n"
+                    await asyncio.sleep(1)  # Brief pause before continuing
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Fatal error in SSE stream generator: %s", exc)
     
     return StreamingResponse(
         event_generator(),

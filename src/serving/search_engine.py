@@ -9,16 +9,36 @@ embeddings and article metadata.
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sklearn.neighbors import NearestNeighbors
+from tqdm import tqdm
 
 from src.preprocessing.nltk_utils import normalize_text as nltk_normalize_text
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level function for parallel tokenization (required for multiprocessing on Windows)
+def _tokenize_worker(text: str, use_nltk: bool) -> List[str]:
+    """Worker function for parallel tokenization."""
+    text = text or ""
+    if not text:
+        return []
+
+    if use_nltk:
+        normalized = nltk_normalize_text(text)
+        if not normalized:
+            return []
+        return normalized.split()
+
+    # Fallback path: simple whitespace-based tokenization.
+    return [t for t in text.lower().split() if t]
 
 
 @dataclass
@@ -48,6 +68,7 @@ class HybridSearchEngine:
         use_nltk_normalization: bool = True,
         title_weight: float = 2.0,
         body_weight: float = 1.0,
+        max_workers: int = None,
     ) -> None:
         """
         Initialize the hybrid search engine.
@@ -56,6 +77,10 @@ class HybridSearchEngine:
             articles: List of article dicts, each containing at least 'title' and 'text'.
             embeddings: Pre-computed embedding matrix of shape (n_articles, dim).
             model: Sentence-transformer-like model with an `.encode(text: str) -> np.ndarray` method.
+            use_nltk_normalization: Whether to use NLTK-based text normalization.
+            title_weight: Weight for title matches in BM25 scoring.
+            body_weight: Weight for body matches in BM25 scoring.
+            max_workers: Maximum number of parallel workers for tokenization (None = auto-detect).
         """
         if embeddings is None or len(embeddings) == 0:
             raise ValueError("Embeddings array must be non-empty.")
@@ -73,25 +98,36 @@ class HybridSearchEngine:
         self._title_weight = max(0.0, float(title_weight))
         self._body_weight = max(0.0, float(body_weight))
 
+        # Determine number of workers for parallel processing
+        if max_workers is None:
+            max_workers = max(1, mp.cpu_count() - 1)  # Leave one core free
+        self._max_workers = max_workers
+
         # Titles and texts extracted up-front for convenience
+        logger.info("Extracting titles and texts from %d articles...", len(articles))
         self._titles: List[str] = [a.get("title", "") or "" for a in articles]
         texts: List[str] = [a.get("text", "") or "" for a in articles]
 
         # ---------------- Semantic index (k-NN over embeddings) ----------------
         # Use cosine distance; we will convert to similarity for ranking.
+        logger.info("Building semantic search index (k-NN)...")
         self._nn = NearestNeighbors(metric="cosine")
         self._nn.fit(self.embeddings)
+        logger.info("Semantic index built successfully")
 
         # ---------------- Keyword index (BM25 over tokenized title/body) -------
         # We build two BM25 indexes:
         #   - one over normalized titles (to strongly reward title matches)
         #   - one over normalized article bodies
         # Final scores are a weighted sum of the two.
-        title_tokens_corpus: List[List[str]] = [self._prepare_tokens(title) for title in self._titles]
-        body_tokens_corpus: List[List[str]] = [self._prepare_tokens(text) for text in texts]
+        logger.info("Tokenizing articles for BM25 index (using %d workers)...", self._max_workers)
+        title_tokens_corpus = self._tokenize_parallel(self._titles, desc="Tokenizing titles")
+        body_tokens_corpus = self._tokenize_parallel(texts, desc="Tokenizing article bodies")
 
+        logger.info("Building BM25 indexes...")
         self._bm25_title = BM25Okapi(title_tokens_corpus)
         self._bm25_body = BM25Okapi(body_tokens_corpus)
+        logger.info("BM25 indexes built successfully")
 
         logger.info(
             "Initialized HybridSearchEngine with %d articles (dim=%d)",
@@ -141,6 +177,50 @@ class HybridSearchEngine:
 
         # Fallback path: simple whitespace-based tokenization.
         return self._tokenize_basic(text)
+
+    def _tokenize_parallel(self, texts: List[str], desc: str = "Tokenizing") -> List[List[str]]:
+        """
+        Tokenize a list of texts in parallel using multiprocessing.
+
+        Args:
+            texts: List of text strings to tokenize.
+            desc: Description for progress bar.
+
+        Returns:
+            List of token lists, one per input text.
+        """
+        if len(texts) == 0:
+            return []
+
+        # For small datasets, use sequential processing (overhead not worth it)
+        if len(texts) < 100 or self._max_workers == 1:
+            return [self._prepare_tokens(text) for text in tqdm(texts, desc=desc, unit="text")]
+
+        # Use parallel processing for larger datasets
+        use_nltk = self._use_nltk_normalization
+
+        # Process in parallel with progress bar
+        results: List[List[str]] = []
+        with ProcessPoolExecutor(max_workers=self._max_workers) as executor:
+            # Submit all tasks with use_nltk parameter
+            future_to_idx = {
+                executor.submit(_tokenize_worker, text, use_nltk): idx 
+                for idx, text in enumerate(texts)
+            }
+
+            # Collect results in order
+            results = [None] * len(texts)  # type: ignore[list-item]
+            with tqdm(total=len(texts), desc=desc, unit="text") as pbar:
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        results[idx] = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Error tokenizing text at index %d: %s", idx, exc)
+                        results[idx] = []  # Fallback to empty tokens
+                    pbar.update(1)
+
+        return results
 
     # --------------------------------------------------------------------- #
     # Semantic search

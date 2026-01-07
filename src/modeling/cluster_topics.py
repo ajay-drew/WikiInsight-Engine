@@ -613,7 +613,7 @@ def build_nn_index(embeddings: np.ndarray, cfg: Dict, use_gpu: bool = False):
             # Transfer to GPU
             logger.info("Transferring embeddings to GPU...")
             transfer_start = perf_counter()
-            gpu_embeddings = cp.asarray(embeddings.astype(np.float32))
+            cp.asarray(embeddings.astype(np.float32))
             transfer_time = perf_counter() - transfer_start
             logger.info("  - Transferred to GPU in %.3f seconds", transfer_time)
             
@@ -834,7 +834,7 @@ def main() -> None:
                     import cupy as cp
                     cp.array([1])
                     logger.warning("  - CuPy available: True")
-                except:
+                except Exception:  # noqa: BLE001
                     logger.warning("  - CuPy available: False")
         else:
             use_gpu = False

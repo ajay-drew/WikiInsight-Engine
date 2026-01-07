@@ -1,26 +1,33 @@
 import React, { useState } from "react";
 import { lookupTopic, TopicLookupResponse } from "../lib/api";
+import { usePersistentState } from "../hooks/usePersistentState";
 
 export function TopicLookupPage() {
-  const [title, setTitle] = useState("");
-  const [result, setResult] = useState<TopicLookupResponse | null>(null);
+  const [state, setState] = usePersistentState<{
+    title: string;
+    result: TopicLookupResponse | null;
+    error: string | null;
+  }>("topicLookupState", {
+    title: "",
+    result: null,
+    error: null,
+  });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { title, result, error } = state;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setResult(null);
+    setState((prev) => ({ ...prev, error: null, result: null }));
     if (!title.trim()) {
-      setError("Please enter an article title.");
+      setState((prev) => ({ ...prev, error: "Please enter an article title." }));
       return;
     }
     setLoading(true);
     try {
       const data = await lookupTopic(title.trim());
-      setResult(data);
+      setState((prev) => ({ ...prev, result: data }));
     } catch (err: any) {
-      setError(err.message || "Failed to look up topic.");
+      setState((prev) => ({ ...prev, error: err.message || "Failed to look up topic." }));
     } finally {
       setLoading(false);
     }
@@ -41,7 +48,7 @@ export function TopicLookupPage() {
         <input
           type="text"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => setState((prev) => ({ ...prev, title: e.target.value }))}
           placeholder="e.g. Machine learning"
           className="px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
         />

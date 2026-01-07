@@ -1,33 +1,42 @@
 import React, { useState } from "react";
 import { searchArticles, SearchResult } from "../lib/api";
 import { SearchResultCard } from "../components/SearchResultCard";
+import { usePersistentState } from "../hooks/usePersistentState";
 
 export function SearchPage() {
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [state, setState] = usePersistentState<{
+    query: string;
+    results: SearchResult[];
+    hasSearched: boolean;
+    error: string | null;
+  }>("searchPageState", {
+    query: "",
+    results: [],
+    hasSearched: false,
+    error: null,
+  });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hasSearched, setHasSearched] = useState(false);
+  const { query, results, hasSearched, error } = state;
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setResults([]);
-    setHasSearched(false);
+    setState((prev) => ({ ...prev, error: null, results: [], hasSearched: false }));
 
     if (!query.trim()) {
-      setError("Please enter a search query.");
+      setState((prev) => ({ ...prev, error: "Please enter a search query." }));
       return;
     }
 
     setLoading(true);
     try {
       const data = await searchArticles(query.trim(), 20);
-      setResults(data.results);
-      setHasSearched(true);
+      setState((prev) => ({ ...prev, results: data.results, hasSearched: true }));
     } catch (err: any) {
-      setError(err.message || "Failed to perform search.");
-      setResults([]);
+      setState((prev) => ({
+        ...prev,
+        error: err.message || "Failed to perform search.",
+        results: [],
+      }));
     } finally {
       setLoading(false);
     }
@@ -48,7 +57,7 @@ export function SearchPage() {
           <input
             type="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => setState((prev) => ({ ...prev, query: e.target.value }))}
             placeholder="e.g. machine learning algorithms, cooking pasta recipes, space exploration..."
             className="flex-1 px-4 py-2.5 rounded-lg bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent"
             disabled={loading}

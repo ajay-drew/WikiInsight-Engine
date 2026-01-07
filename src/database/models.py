@@ -5,8 +5,6 @@ Uses pgvector for efficient vector similarity search on embeddings.
 """
 
 from datetime import datetime
-from typing import List, Optional
-
 from sqlalchemy import (
     Column,
     Integer,
@@ -17,7 +15,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     JSON,
-    Boolean,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 from sqlalchemy.dialects.postgresql import ARRAY
