@@ -36,9 +36,9 @@ export class IngestionPage {
    * Navigate to ingestion page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/');
-    await this.page.getByRole('button', { name: 'Ingestion' }).click();
-    await this.queryInputs.first().waitFor({ state: 'visible', timeout: 5000 });
+    await this.page.goto('/ingestion');
+    await this.page.waitForLoadState('networkidle');
+    await this.queryInputs.first().waitFor({ state: 'visible', timeout: 10000 });
   }
 
   /**

@@ -108,6 +108,19 @@ htmlcov/
 .tox/
 .hypothesis/
 
+# Playwright
+frontend/test-results/
+frontend/playwright-report/
+frontend/playwright/.cache/
+frontend/playwright/.auth/
+frontend/playwright/videos/
+frontend/playwright/screenshots/
+frontend/.playwright/
+playwright-report/
+test-results/
+playwright/.cache/
+playwright/.auth/
+
 # Docker
 .dockerignore
 

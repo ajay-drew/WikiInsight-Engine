@@ -7,10 +7,8 @@ ingestion:
   seed_queries:
   - Machine learning
   - Artificial intelligence
-  - 'Nvidia '
-  - GPU
-  - Agentic AI
-  per_query_limit: 70
+  - Data science
+  per_query_limit: 35
   max_articles: 1000
   max_links_per_article: 50
   stub_min_words: 200
@@ -64,6 +62,7 @@ monitoring:
 graph:
   semantic_similarity_threshold: 0.7
   max_nodes_per_visualization: 100
+  enable_link_edges: true
   enable_cluster_edges: true
 wikidata:
   enabled: true

@@ -34,9 +34,10 @@ export class ClustersOverviewPage {
    * Navigate to clusters page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/');
-    await this.page.getByRole('button', { name: 'Clusters' }).click();
+    await this.page.goto('/clusters');
     await this.page.waitForLoadState('networkidle');
+    // Wait for page content to be visible
+    await this.page.waitForTimeout(500);
   }
 
   /**

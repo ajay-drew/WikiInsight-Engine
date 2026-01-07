@@ -93,10 +93,12 @@ def main() -> None:
         config = load_config(CONFIG_PATH)
         graph_cfg = config.get("graph", {})
         semantic_threshold = float(graph_cfg.get("semantic_similarity_threshold", 0.7))
+        enable_link_edges = bool(graph_cfg.get("enable_link_edges", True))
         enable_cluster_edges = bool(graph_cfg.get("enable_cluster_edges", True))
         
         logger.info("Graph configuration:")
         logger.info("  - Semantic similarity threshold: %.2f", semantic_threshold)
+        logger.info("  - Enable link edges: %s", enable_link_edges)
         logger.info("  - Enable cluster edges: %s", enable_cluster_edges)
 
         # Load data
@@ -144,6 +146,7 @@ def main() -> None:
         build_start = perf_counter()
         builder = KnowledgeGraphBuilder(
             semantic_threshold=semantic_threshold,
+            enable_link_edges=enable_link_edges,
             enable_cluster_edges=enable_cluster_edges,
         )
         graph = builder.build_graph(articles_df, cluster_assignments, embeddings)

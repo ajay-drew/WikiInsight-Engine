@@ -37,9 +37,9 @@ test.describe('Navigation E2E', () => {
   test('should load correct page on initial load', async ({ page }) => {
     await page.goto('/');
     
-    // Default page should be search
+    // Default page should be dashboard (redirects from /)
     const layout = new Layout(page);
-    await expect(layout.verifyPageActive('search')).resolves.toBe(true);
+    await expect(layout.verifyPageActive('dashboard')).resolves.toBe(true);
   });
 
   test('should make API calls when pages load', async ({ page }) => {

@@ -19,6 +19,7 @@ interface KnowledgeGraphProps {
   edges: GraphEdge[];
   onNodeClick?: (node: GraphNode) => void;
   showLayers?: {
+    link: boolean;
     cluster: boolean;
     semantic: boolean;
   };
@@ -39,7 +40,7 @@ export function KnowledgeGraph({
   nodes,
   edges,
   onNodeClick,
-  showLayers = { cluster: true, semantic: true },
+  showLayers = { link: true, cluster: true, semantic: true },
 }: KnowledgeGraphProps) {
   // Filter edges based on layer visibility and validity
   const filteredEdges = useMemo(() => {
@@ -52,6 +53,7 @@ export function KnowledgeGraph({
       // Ensure layer is a number for comparison
       const layer = typeof edge.layer === 'number' ? edge.layer : parseInt(String(edge.layer), 10);
       
+      if (layer === 1 && !showLayers.link) return false;
       if (layer === 2 && !showLayers.cluster) return false;
       if (layer === 3 && !showLayers.semantic) return false;
       
@@ -132,7 +134,9 @@ export function KnowledgeGraph({
       // Color edges by layer (ensure layer is a number)
       const layer = typeof edge.layer === 'number' ? edge.layer : parseInt(String(edge.layer), 10);
       
-      if (layer === 2) {
+      if (layer === 1) {
+        edgeStyle.stroke = "#3b82f6"; // Blue for links
+      } else if (layer === 2) {
         edgeStyle.stroke = "#10b981"; // Green for cluster
       } else if (layer === 3) {
         edgeStyle.stroke = "#f59e0b"; // Orange for semantic

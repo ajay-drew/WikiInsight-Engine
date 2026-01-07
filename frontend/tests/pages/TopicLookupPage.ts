@@ -32,10 +32,9 @@ export class TopicLookupPage {
    * Navigate to topic lookup page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/');
-    // Navigate to topic lookup page via navigation
-    await this.page.getByRole('button', { name: 'Topic Lookup' }).click();
-    await this.titleInput.waitFor({ state: 'visible', timeout: 5000 });
+    await this.page.goto('/lookup');
+    await this.page.waitForLoadState('networkidle');
+    await this.titleInput.waitFor({ state: 'visible', timeout: 10000 });
   }
 
   /**

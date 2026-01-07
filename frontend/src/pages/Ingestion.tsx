@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { connectPipelineProgress, PipelineConfig, PipelineProgress, startPipeline, getPipelineLogs, deletePipelineLogs, PipelineLogEntry } from "../lib/api";
 import { usePersistentState } from "../hooks/usePersistentState";
+import { useToast } from "../hooks/useToast";
 
 export function IngestionPage() {
   const [config, setConfig] = usePersistentState<{
@@ -14,10 +15,11 @@ export function IngestionPage() {
   });
   const [progress, setProgress] = useState<PipelineProgress | null>(null);
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
+  const toast = useToast();
   const [logs, setLogs] = useState<PipelineLogEntry[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
 
   // Calculate total potential articles
   const totalPotential = config.queries.length * config.perQueryLimit;
@@ -59,6 +61,15 @@ export function IngestionPage() {
 
     return () => clearInterval(interval);
   }, [isRunning]);
+
+  // Auto-scroll logs container to bottom when new logs arrive (only scrolls the container, not the page)
+  useEffect(() => {
+    if (logs.length > 0 && logsContainerRef.current) {
+      const container = logsContainerRef.current;
+      // Scroll to bottom of the container, not the page
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [logs]);
 
   function handleAddQuery() {
     if (config.queries.length < 6) {
@@ -105,11 +116,10 @@ export function IngestionPage() {
   async function handleStartPipeline() {
     const validationError = validateConfig();
     if (validationError) {
-      setError(validationError);
+      toast.showError(validationError);
       return;
     }
 
-    setError(null);
     setIsRunning(true);
 
     try {
@@ -126,7 +136,7 @@ export function IngestionPage() {
 
       es.onopen = () => {
         console.log("SSE connection opened");
-        setError(null);
+        toast.showSuccess("Pipeline started successfully");
       };
 
       es.onmessage = async (event) => {
@@ -198,21 +208,20 @@ export function IngestionPage() {
         // EventSource automatically attempts to reconnect
         // Only show error if connection is actually closed and not recovering
         if (es.readyState === EventSource.CLOSED) {
-          setError("Lost connection to progress stream. EventSource will attempt to reconnect automatically.");
+          toast.showError("Lost connection to progress stream. EventSource will attempt to reconnect automatically.");
           // EventSource will automatically try to reconnect, so we don't need manual reconnection
           // Just update the error message to be less alarming
           setTimeout(() => {
             if (es.readyState === EventSource.CONNECTING || es.readyState === EventSource.OPEN) {
-              setError(null); // Clear error if reconnected
+              // Connection recovered
             }
           }, 5000);
         } else if (es.readyState === EventSource.CONNECTING) {
-          // Connection is reconnecting - clear error
-          setError(null);
+          // Connection is reconnecting
         }
       };
     } catch (err: any) {
-      setError(err.message || "Failed to start pipeline");
+      toast.showError(err.message || "Failed to start pipeline");
       setIsRunning(false);
     }
   }
@@ -232,14 +241,17 @@ export function IngestionPage() {
     <div className="space-y-6">
       <section>
         <h1 className="text-2xl font-semibold mb-2">Pipeline Configuration</h1>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
           Configure and start the data pipeline. Set 3-6 seed queries, per-query article limit (up to 70),
           and the system will fetch articles (capped at 1000 total).
         </p>
       </section>
 
       {/* Configuration Form */}
-      <div className="border border-slate-800 rounded-lg p-6 bg-slate-900/70 space-y-4">
+      <div 
+        className="border rounded-lg p-6 space-y-4"
+        style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+      >
         <div>
           <label className="block text-sm font-medium mb-2">
             Seed Queries ({config.queries.length}/6)
@@ -252,7 +264,10 @@ export function IngestionPage() {
                   value={query}
                   onChange={(e) => handleQueryChange(index, e.target.value)}
                   placeholder={`Query ${index + 1} (e.g. Machine learning)`}
-                  className="flex-1 px-3 py-2 rounded bg-slate-900 border border-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                  className="flex-1 px-3 py-2 rounded text-sm focus:outline-none focus:ring-2 transition-all"
+                  style={{ backgroundColor: 'var(--bg-tertiary)', borderColor: 'var(--border-color)', color: 'var(--text-primary)' }}
+                  onFocus={(e) => e.currentTarget.style.borderColor = 'var(--accent)'}
+                  onBlur={(e) => e.currentTarget.style.borderColor = 'var(--border-color)'}
                   disabled={isRunning}
                 />
                 {config.queries.length > 3 && (
@@ -270,7 +285,10 @@ export function IngestionPage() {
           {config.queries.length < 6 && (
             <button
               onClick={handleAddQuery}
-              className="mt-2 px-3 py-1.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm"
+              className="mt-2 px-3 py-1.5 rounded text-sm transition-colors"
+              style={{ backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-secondary)'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-tertiary)'}
               disabled={isRunning}
             >
               + Add Query
@@ -291,7 +309,7 @@ export function IngestionPage() {
             className="w-full"
             disabled={isRunning}
           />
-          <div className="flex justify-between text-xs text-slate-400 mt-1">
+          <div className="flex justify-between text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
             <span>1</span>
             <span>70</span>
           </div>
@@ -311,18 +329,18 @@ export function IngestionPage() {
             className="w-full"
             disabled={isRunning}
           />
-          <div className="flex justify-between text-xs text-slate-400 mt-1">
+          <div className="flex justify-between text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
             <span>10</span>
             <span>1000</span>
           </div>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
             Maximum total articles to fetch (hard cap: 1000)
           </p>
         </div>
 
-        <div className="border-t border-slate-800 pt-4">
+        <div className="border-t pt-4" style={{ borderColor: 'var(--border-color)' }}>
           <div className="flex justify-between items-center text-sm">
-            <span className="text-slate-400">Total Potential Articles:</span>
+            <span style={{ color: 'var(--text-tertiary)' }}>Total Potential Articles:</span>
             <span className="font-mono text-sky-400">
               {totalPotential > config.maxArticles ? (
                 <>
@@ -335,9 +353,9 @@ export function IngestionPage() {
           </div>
         </div>
 
-        {error && (
-          <div className="border border-red-500/50 rounded p-3 bg-red-500/10">
-            <p className="text-sm text-red-400">{error}</p>
+        {validateConfig() && (
+          <div className="border rounded-lg p-3 text-sm" style={{ borderColor: 'rgba(234, 179, 8, 0.5)', backgroundColor: 'rgba(234, 179, 8, 0.1)', color: 'rgb(250, 204, 21)' }}>
+            ⚠️ {validateConfig()}
           </div>
         )}
 
@@ -352,15 +370,18 @@ export function IngestionPage() {
 
       {/* Progress Display */}
       {progress && (
-        <div className="border border-slate-800 rounded-lg p-6 bg-slate-900/70 space-y-4">
+        <div 
+          className="border rounded-lg p-6 space-y-4"
+          style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+        >
           <div>
             <div className="flex justify-between items-center mb-2">
-              <h2 className="text-lg font-semibold">Pipeline Progress</h2>
-              <span className="text-sm font-mono text-sky-400">
+              <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>Pipeline Progress</h2>
+              <span className="text-sm font-mono" style={{ color: 'var(--accent)' }}>
                 {progress.overall_progress.toFixed(1)}%
               </span>
             </div>
-            <div className="w-full bg-slate-800 rounded-full h-2.5">
+            <div className="w-full rounded-full h-2.5" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
               <div
                 className="bg-sky-500 h-2.5 rounded-full transition-all duration-300"
                 style={{ width: `${progress.overall_progress}%` }}
@@ -376,12 +397,12 @@ export function IngestionPage() {
                     {currentStage?.replace("_", " ")}: {currentStageData.message}
                   </span>
                   {currentStageData.eta !== null && (
-                    <span className="text-xs text-slate-400">
+                    <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
                       ETA: {formatTime(currentStageData.eta)}
                     </span>
                   )}
                 </div>
-                <div className="w-full bg-slate-800 rounded-full h-2">
+                <div className="w-full rounded-full h-2" style={{ backgroundColor: 'var(--bg-tertiary)' }}>
                   <div
                     className="bg-sky-400 h-2 rounded-full transition-all duration-300"
                     style={{ width: `${currentStageData.progress}%` }}
@@ -392,34 +413,36 @@ export function IngestionPage() {
           )}
 
           {/* Stage Status */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t border-slate-800">
-            {Object.entries(progress.stages).map(([stage, stageData]) => (
-              <div
-                key={stage}
-                className={`p-3 rounded border ${
-                  stageData.status === "completed"
-                    ? "border-green-500/50 bg-green-500/10"
-                    : stageData.status === "running"
-                    ? "border-sky-500/50 bg-sky-500/10"
-                    : stageData.status === "error"
-                    ? "border-red-500/50 bg-red-500/10"
-                    : "border-slate-800 bg-slate-800/50"
-                }`}
-              >
-                <div className="text-xs font-medium capitalize mb-1">{stage.replace("_", " ")}</div>
-                <div className="text-xs text-slate-400">
-                  {stageData.status === "completed" && "✓ Complete"}
-                  {stageData.status === "running" && "⟳ Running"}
-                  {stageData.status === "error" && "✗ Error"}
-                  {stageData.status === "pending" && "○ Pending"}
-                </div>
-                {stageData.progress > 0 && (
-                  <div className="text-xs text-slate-500 mt-1">
-                    {stageData.progress.toFixed(0)}%
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-4 border-t" style={{ borderColor: 'var(--border-color)' }}>
+            {Object.entries(progress.stages).map(([stage, stageData]) => {
+              const statusStyles = {
+                completed: { borderColor: 'rgba(16, 185, 129, 0.5)', backgroundColor: 'rgba(16, 185, 129, 0.1)' },
+                running: { borderColor: 'rgba(14, 165, 233, 0.5)', backgroundColor: 'rgba(14, 165, 233, 0.1)' },
+                error: { borderColor: 'rgba(239, 68, 68, 0.5)', backgroundColor: 'rgba(239, 68, 68, 0.1)' },
+                pending: { borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-tertiary)' },
+              };
+              const style = statusStyles[stageData.status as keyof typeof statusStyles] || statusStyles.pending;
+              return (
+                <div
+                  key={stage}
+                  className="p-3 rounded border"
+                  style={style}
+                >
+                  <div className="text-xs font-medium capitalize mb-1" style={{ color: 'var(--text-primary)' }}>{stage.replace("_", " ")}</div>
+                  <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                    {stageData.status === "completed" && "✓ Complete"}
+                    {stageData.status === "running" && "⟳ Running"}
+                    {stageData.status === "error" && "✗ Error"}
+                    {stageData.status === "pending" && "○ Pending"}
                   </div>
-                )}
-              </div>
-            ))}
+                  {stageData.progress > 0 && (
+                    <div className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                      {stageData.progress.toFixed(0)}%
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -430,32 +453,36 @@ export function IngestionPage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold">Pipeline Logs</h2>
             {currentRunId && (
-              <span className="text-xs text-slate-400 font-mono">Run ID: {currentRunId.substring(0, 8)}...</span>
+              <span className="text-xs font-mono" style={{ color: 'var(--text-tertiary)' }}>Run ID: {currentRunId.substring(0, 8)}...</span>
             )}
           </div>
-          <div className="border border-slate-800 rounded-lg bg-slate-900/70 p-4 max-h-[400px] overflow-auto">
+          <div 
+            ref={logsContainerRef}
+            className="border rounded-lg p-4 max-h-[400px] overflow-auto"
+            style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--bg-secondary)' }}
+          >
             {logs.length === 0 ? (
-              <p className="text-sm text-slate-400">No logs available yet...</p>
+              <p className="text-sm" style={{ color: 'var(--text-tertiary)' }}>No logs available yet...</p>
             ) : (
               <div className="space-y-1 font-mono text-xs">
                 {logs.map((log, idx) => (
                   <div
                     key={idx}
-                    className={`${
-                      log.log_level === "ERROR"
-                        ? "text-red-400"
+                    style={{
+                      color: log.log_level === "ERROR" 
+                        ? "#ef4444" 
                         : log.log_level === "WARNING"
-                        ? "text-yellow-400"
+                        ? "#f59e0b"
                         : log.log_level === "DEBUG"
-                        ? "text-slate-500"
-                        : "text-slate-300"
-                    }`}
+                        ? 'var(--text-tertiary)'
+                        : 'var(--text-secondary)'
+                    }}
                   >
-                    <span className="text-slate-500">
+                    <span style={{ color: 'var(--text-tertiary)' }}>
                       [{new Date(log.timestamp).toLocaleTimeString()}]
                     </span>
                     {log.stage_name && (
-                      <span className="text-sky-400 ml-2">[{log.stage_name}]</span>
+                      <span className="ml-2" style={{ color: 'var(--accent)' }}>[{log.stage_name}]</span>
                     )}
                     <span className={`ml-2 ${
                       log.log_level === "ERROR" ? "font-bold" : ""

@@ -28,9 +28,9 @@ export class MonitoringPage {
    * Navigate to monitoring page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/');
-    await this.page.getByRole('button', { name: 'Monitoring' }).click();
+    await this.page.goto('/monitoring');
     await this.page.waitForLoadState('networkidle');
+    await this.page.waitForTimeout(500);
   }
 
   /**

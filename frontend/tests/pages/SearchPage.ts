@@ -31,9 +31,9 @@ export class SearchPage {
    * Navigate to search page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/');
+    await this.page.goto('/search');
     // Wait for search input to be visible
-    await this.searchInput.waitFor({ state: 'visible', timeout: 5000 });
+    await this.searchInput.waitFor({ state: 'visible', timeout: 10000 });
   }
 
   /**

@@ -2,6 +2,7 @@
 Knowledge graph construction using NetworkX.
 
 Builds a multi-layer graph from Wikipedia articles with:
+- Layer 1: Link relationships (Wikipedia article links)
 - Layer 2: Cluster relationships (same-cluster connections)
 - Layer 3: Semantic relationships (embedding similarity)
 """
@@ -26,6 +27,7 @@ class KnowledgeGraphBuilder:
         self,
         semantic_threshold: float = 0.7,
         enable_cluster_edges: bool = True,
+        enable_link_edges: bool = True,
     ):
         """
         Initialize graph builder.
@@ -33,9 +35,11 @@ class KnowledgeGraphBuilder:
         Args:
             semantic_threshold: Minimum cosine similarity for semantic edges (Layer 3)
             enable_cluster_edges: Whether to add cluster relationship edges (Layer 2)
+            enable_link_edges: Whether to add Wikipedia link edges (Layer 1)
         """
         self.semantic_threshold = semantic_threshold
         self.enable_cluster_edges = enable_cluster_edges
+        self.enable_link_edges = enable_link_edges
         self.graph: Optional[nx.DiGraph] = None
 
     def build_graph(
@@ -84,6 +88,25 @@ class KnowledgeGraphBuilder:
                 cluster_id=cluster_id,
             )
 
+        # Create a set of valid article titles for fast lookup (case-insensitive)
+        valid_titles_lower = {str(title).lower() for title in titles}
+        title_lower_to_original: Dict[str, str] = {
+            str(title).lower(): title for title in titles
+        }
+
+        # Layer 1: Link relationships
+        if self.enable_link_edges:
+            logger.info("=" * 80)
+            logger.info("Adding Layer 1 edges (Wikipedia links)...")
+            logger.info("=" * 80)
+            layer1_start = perf_counter()
+            layer1_count = self._add_link_edges(articles_df, valid_titles_lower, title_lower_to_original)
+            layer1_time = perf_counter() - layer1_start
+            logger.info("Added %d Layer 1 edges in %.2f seconds", layer1_count, layer1_time)
+        else:
+            logger.info("Skipping Layer 1 edges (disabled)")
+            layer1_count = 0
+
         # Layer 2: Cluster relationships
         if self.enable_cluster_edges:
             logger.info("=" * 80)
@@ -110,14 +133,107 @@ class KnowledgeGraphBuilder:
         total_edges = self.graph.number_of_edges()
         total_nodes = self.graph.number_of_nodes()
         logger.info(
-            "Graph construction complete: %d nodes, %d edges (L2: %d, L3: %d)",
+            "Graph construction complete: %d nodes, %d edges (L1: %d, L2: %d, L3: %d)",
             total_nodes,
             total_edges,
+            layer1_count if self.enable_link_edges else 0,
             layer2_count if self.enable_cluster_edges else 0,
             layer3_count,
         )
 
         return self.graph
+
+    def _add_link_edges(
+        self,
+        articles_df: pd.DataFrame,
+        valid_titles_lower: set,
+        title_lower_to_original: Dict[str, str],
+    ) -> int:
+        """
+        Add Layer 1 edges: Wikipedia article links.
+        
+        Creates directed edges from each article to the articles it links to,
+        but only if both articles exist in the graph.
+        
+        Args:
+            articles_df: DataFrame with columns: title, links
+            valid_titles_lower: Set of lowercase article titles that exist in the graph
+            title_lower_to_original: Mapping from lowercase to original title
+            
+        Returns:
+            Number of edges added
+        """
+        edge_count = 0
+        
+        if "links" not in articles_df.columns:
+            logger.warning("Articles DataFrame missing 'links' column. Skipping Layer 1 edges.")
+            return 0
+        
+        logger.info("Processing Wikipedia links for %d articles...", len(articles_df))
+        
+        edges_to_add = []
+        for _, row in tqdm(articles_df.iterrows(), total=len(articles_df), desc="Processing links", unit="article"):
+            source_title = str(row["title"])
+            links = row.get("links", [])
+            
+            # Handle different link formats (list, array, etc.)
+            if links is None:
+                links = []
+            elif isinstance(links, np.ndarray):
+                # Handle numpy arrays - check size first to avoid ambiguous truth value
+                if links.size == 0:
+                    links = []
+                else:
+                    links = links.tolist()
+            elif not isinstance(links, (list, tuple)):
+                # Handle other types (pandas Series, strings, etc.)
+                try:
+                    # Check for NaN/None values safely
+                    if pd.isna(links):
+                        links = []
+                    elif isinstance(links, str):
+                        links = [links]
+                    else:
+                        # Try to convert to list (e.g., pandas Series)
+                        links = list(links) if hasattr(links, '__iter__') else []
+                except (ValueError, TypeError):
+                    # Fallback: empty list if conversion fails
+                    links = []
+            
+            # Process each link
+            for link_title in links:
+                if not link_title or pd.isna(link_title):
+                    continue
+                
+                link_title_str = str(link_title).strip()
+                if not link_title_str:
+                    continue
+                
+                # Check if the linked article exists in our graph (case-insensitive)
+                link_lower = link_title_str.lower()
+                if link_lower in valid_titles_lower:
+                    target_title = title_lower_to_original[link_lower]
+                    
+                    # Only add edge if it doesn't already exist
+                    if not self.graph.has_edge(source_title, target_title):
+                        edges_to_add.append((
+                            source_title,
+                            target_title,
+                            {"layer": 1, "weight": 1.0, "type": "link"}
+                        ))
+        
+        # Batch add all edges
+        if edges_to_add:
+            logger.info("Adding %d link edges to graph (batch operation)...", len(edges_to_add))
+            add_start = perf_counter()
+            self.graph.add_edges_from(edges_to_add)
+            add_time = perf_counter() - add_start
+            logger.info("  - Edges added in %.2f seconds", add_time)
+            edge_count = len(edges_to_add)
+        else:
+            logger.info("No valid link edges to add")
+        
+        return edge_count
 
     def _add_cluster_edges(
         self,
