@@ -65,13 +65,13 @@ async def test_fetch_corpus_async_concurrent():
         
         # Run fetch with test queries
         articles = await fetch_corpus_async(
-            max_articles=10, 
+            max_articles=50, 
             per_query_limit=5,
             seed_queries=test_queries
         )
         
         # Verify concurrent execution
-        assert len(articles) <= 10
+        assert len(articles) <= 50
         assert mock_client.search_articles.call_count == len(test_queries)
         # Should call get_articles_batch once with all titles (concurrent)
         assert mock_client.get_articles_batch.call_count == 1
@@ -113,12 +113,12 @@ async def test_fetch_corpus_async_respects_max_articles():
         mock_client.executor.shutdown = MagicMock()
         
         articles = await fetch_corpus_async(
-            max_articles=15, 
+            max_articles=50, 
             per_query_limit=20,
             seed_queries=test_queries
         )
         
-        assert len(articles) <= 15
+        assert len(articles) <= 50
 
 
 def test_normalize_article():

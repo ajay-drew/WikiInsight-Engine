@@ -73,14 +73,14 @@ class TestFrontendBackendDataFlow:
                     json={
                         "seed_queries": ["AI", "ML", "Deep Learning"],
                         "per_query_limit": 8,
-                        "max_articles": 24,
+                        "max_articles": 50,
                     }
                 )
         
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "started"
-        assert data["config"]["max_articles"] == 24
+        assert data["config"]["max_articles"] == 50
         assert data["config"]["per_query_limit"] == 8
         assert len(data["config"]["seed_queries"]) == 3
     
@@ -108,7 +108,7 @@ class TestFrontendBackendDataFlow:
             frontend_config = {
                 "seed_queries": ["Python", "JavaScript", "Rust"],
                 "per_query_limit": 5,
-                "max_articles": 15,
+                "max_articles": 50,
             }
             
             with patch("subprocess.Popen"):
@@ -122,8 +122,8 @@ class TestFrontendBackendDataFlow:
             with open(config_file, "r") as f:
                 updated_config = yaml.safe_load(f)
             
-            assert updated_config["ingestion"]["max_articles"] == 15, \
-                f"Expected max_articles=15, got {updated_config['ingestion'].get('max_articles')}"
+            assert updated_config["ingestion"]["max_articles"] == 50, \
+                f"Expected max_articles=50, got {updated_config['ingestion'].get('max_articles')}"
             assert updated_config["ingestion"]["per_query_limit"] == 5, \
                 f"Expected per_query_limit=5, got {updated_config['ingestion'].get('per_query_limit')}"
             assert updated_config["ingestion"]["seed_queries"] == ["Python", "JavaScript", "Rust"]
@@ -242,10 +242,10 @@ class TestIngestionConfigReading:
                     resume=False,
                 ))
                 
-                # Verify fetch_corpus_async was called with config value (24), not CLI default (1000)
+                # Verify fetch_corpus_async was called with config value (50), not CLI default (1000)
                 call_args = mock_fetch.call_args
-                assert call_args.kwargs["max_articles"] == 24, \
-                    f"Expected max_articles=24 from config, got {call_args.kwargs['max_articles']}"
+                assert call_args.kwargs["max_articles"] == 50, \
+                    f"Expected max_articles=50 from config, got {call_args.kwargs['max_articles']}"
                 assert call_args.kwargs["per_query_limit"] == 8, \
                     f"Expected per_query_limit=8 from config, got {call_args.kwargs['per_query_limit']}"
         finally:
@@ -317,7 +317,7 @@ class TestMaxArticlesEnforcement:
         
         with patch("src.ingestion.fetch_wikipedia_data.AsyncWikipediaClient", return_value=mock_client):
             articles = await fetch_corpus_async(
-                max_articles=24,  # Limit to 24
+                max_articles=50,  # Limit to 50
                 per_query_limit=50,
                 batch_size=20,
                 max_workers=10,
@@ -325,8 +325,8 @@ class TestMaxArticlesEnforcement:
             )
             
             # Should not exceed max_articles
-            assert len(articles) <= 24, \
-                f"Expected at most 24 articles, got {len(articles)}"
+            assert len(articles) <= 50, \
+                f"Expected at most 50 articles, got {len(articles)}"
 
 
 class TestFrontendAPIInterface:
@@ -340,9 +340,9 @@ class TestFrontendAPIInterface:
         valid = PipelineConfigRequest(
             seed_queries=["A", "B", "C"],
             per_query_limit=8,
-            max_articles=24,
+            max_articles=50,
         )
-        assert valid.max_articles == 24
+        assert valid.max_articles == 50
         assert valid.per_query_limit == 8
         
         # Test default max_articles
@@ -395,7 +395,7 @@ class TestFrontendAPIInterface:
                     json={
                         "seed_queries": ["Test1", "Test2", "Test3"],
                         "per_query_limit": 8,
-                        "max_articles": 24,
+                        "max_articles": 50,
                     }
                 )
         
@@ -411,7 +411,7 @@ class TestFrontendAPIInterface:
         assert "max_articles" in data["config"]
         
         # Verify values match request
-        assert data["config"]["max_articles"] == 24
+        assert data["config"]["max_articles"] == 50
         assert data["config"]["per_query_limit"] == 8
         assert len(data["config"]["seed_queries"]) == 3
 

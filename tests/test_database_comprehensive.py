@@ -196,22 +196,38 @@ class TestArticleRepository:
     @pytest.mark.asyncio
     async def test_search_similar_articles(self, article_repo, mock_session):
         """Test pgvector similarity search."""
-        query_embedding = np.random.randn(384).astype(np.float32)
+        query_embedding = np.random.randn(384).astype(np.float32).tolist()
         
-        # Mock search results
-        mock_article1 = Article(id=1, title="Article 1")
-        mock_article2 = Article(id=2, title="Article 2")
+        # Mock search results - search_similar returns List[Tuple[Article, float]]
+        # The method uses result.fetchall() which returns rows with attributes
+        mock_row1 = MagicMock()
+        mock_row1.id = 1
+        mock_row1.title = "Article 1"
+        mock_row1.cleaned_text = "Content 1"
+        mock_row1.cluster_id = 0
+        mock_row1.similarity = 0.95
+        
+        mock_row2 = MagicMock()
+        mock_row2.id = 2
+        mock_row2.title = "Article 2"
+        mock_row2.cleaned_text = "Content 2"
+        mock_row2.cluster_id = 0
+        mock_row2.similarity = 0.90
         
         mock_result = MagicMock()
-        mock_result.scalars.return_value.all.return_value = [mock_article1, mock_article2]
+        mock_result.fetchall.return_value = [mock_row1, mock_row2]
         
         mock_session.execute.return_value = mock_result
         
         results = await article_repo.search_similar(query_embedding, top_k=5)
         
         assert len(results) == 2
-        assert results[0].title == "Article 1"
-        assert results[1].title == "Article 2"
+        assert isinstance(results[0], tuple)
+        assert len(results[0]) == 2
+        assert results[0][0].title == "Article 1"
+        assert results[0][1] == 0.95  # similarity score
+        assert results[1][0].title == "Article 2"
+        assert results[1][1] == 0.90  # similarity score
         mock_session.execute.assert_called_once()
     
     @pytest.mark.asyncio
@@ -326,9 +342,11 @@ class TestGraphRepository:
             for i in range(5)
         ]
         
-        edges = await graph_repo.create_batch(edges_data)
+        count = await graph_repo.create_batch(edges_data)
         
-        assert len(edges) == 5
+        # create_batch returns count of created edges (int)
+        assert isinstance(count, int)
+        assert count == 5
         mock_session.add_all.assert_called_once()
     
     @pytest.mark.asyncio
@@ -389,7 +407,7 @@ class TestDatabaseSearchEngine:
         # Mock article repository
         mock_article = Article(id=1, title="Test Article", cleaned_text="Test content")
         mock_repo = AsyncMock()
-        mock_repo.search_similar = AsyncMock(return_value=[mock_article])
+        mock_repo.search_similar = AsyncMock(return_value=[(mock_article, 0.95)])  # Returns tuples
         
         engine = DatabaseSearchEngine(
             db_manager=mock_db_manager,
@@ -397,17 +415,24 @@ class TestDatabaseSearchEngine:
         )
         engine._initialized = True
         
+        # Create async context manager mock - session() must return an async context manager
+        async_context_mock = AsyncMock()
+        async_context_mock.__aenter__ = AsyncMock(return_value=mock_repo)
+        async_context_mock.__aexit__ = AsyncMock(return_value=None)
+        
+        # Make session() return the async context manager
+        mock_db_manager.session = MagicMock(return_value=async_context_mock)
+        
         with patch("src.serving.db_search_engine.ArticleRepository", return_value=mock_repo):
-            with patch.object(mock_db_manager, "session", return_value=AsyncMock()):
-                results = await engine.search(
-                    query="test query",
-                    top_k=5,
-                    semantic_weight=1.0,
-                    keyword_weight=0.0,
-                )
-                
-                assert len(results) > 0
-                assert results[0].title == "Test Article"
+            results = await engine.search(
+                query="test query",
+                top_k=5,
+                semantic_weight=1.0,
+                keyword_weight=0.0,
+            )
+            
+            assert len(results) > 0
+            assert results[0].title == "Test Article"
     
     @pytest.mark.asyncio
     async def test_database_search_hybrid(self, mock_db_manager, mock_embedding_model):
@@ -417,8 +442,8 @@ class TestDatabaseSearchEngine:
         # Mock repositories
         mock_article = Article(id=1, title="Test Article", cleaned_text="Test content")
         mock_repo = AsyncMock()
-        mock_repo.search_similar = AsyncMock(return_value=[mock_article])
-        mock_repo.fulltext_search = AsyncMock(return_value=[mock_article])
+        mock_repo.search_similar = AsyncMock(return_value=[(mock_article, 0.95)])  # Returns tuples
+        mock_repo.fulltext_search = AsyncMock(return_value=[(mock_article, 0.90)])
         
         engine = DatabaseSearchEngine(
             db_manager=mock_db_manager,
@@ -426,16 +451,23 @@ class TestDatabaseSearchEngine:
         )
         engine._initialized = True
         
+        # Create async context manager mock - session() must return an async context manager
+        async_context_mock = AsyncMock()
+        async_context_mock.__aenter__ = AsyncMock(return_value=mock_repo)
+        async_context_mock.__aexit__ = AsyncMock(return_value=None)
+        
+        # Make session() return the async context manager
+        mock_db_manager.session = MagicMock(return_value=async_context_mock)
+        
         with patch("src.serving.db_search_engine.ArticleRepository", return_value=mock_repo):
-            with patch.object(mock_db_manager, "session", return_value=AsyncMock()):
-                results = await engine.search(
-                    query="test query",
-                    top_k=5,
-                    semantic_weight=0.5,
-                    keyword_weight=0.5,
-                )
-                
-                assert len(results) > 0
+            results = await engine.search(
+                query="test query",
+                top_k=5,
+                semantic_weight=0.5,
+                keyword_weight=0.5,
+            )
+            
+            assert len(results) > 0
 
 
 class TestDatabaseModels:

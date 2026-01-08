@@ -7,11 +7,8 @@ ingestion:
   seed_queries:
   - Machine learning
   - Artificial intelligence
-  - GPU
-  - Nvidia
-  - Google
-  - Microsoft
-  per_query_limit: 70
+  - Data science
+  per_query_limit: 21
   max_articles: 1000
   max_links_per_article: 50
   stub_min_words: 200
@@ -19,10 +16,15 @@ ingestion:
   default_per_query_limit: 50
 models:
   clustering:
-    method: kmeans
-    n_clusters: 100
+    method: auto
+    n_clusters: null
+    adaptive: true
+    auto_n_clusters: true
     random_state: 42
     use_gpu: 'true'
+    preprocessing:
+      normalize_embeddings: true
+      max_optimization_time: 60
   neighbors:
     n_neighbors: 10
     algorithm: auto

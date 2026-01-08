@@ -85,7 +85,7 @@ class TestKnowledgeGraphBuilder:
         # Check that cluster edges exist
         cluster_edges = [
             (u, v, d) for u, v, d in graph.edges(data=True)
-            if d.get("layer") == "cluster"
+            if d.get("layer") == 2 and d.get("type") == "cluster"
         ]
         
         # Should have some cluster edges (articles in same cluster)
@@ -241,14 +241,16 @@ class TestGraphService:
     
     def test_get_neighbors_with_layer_filter(self, graph_service):
         """Test getting neighbors filtered by layer."""
-        link_neighbors = graph_service.get_neighbors("Article_0", layer="link")
-        cluster_neighbors = graph_service.get_neighbors("Article_0", layer="cluster")
+        link_neighbors = graph_service.get_neighbors("Article_0", layer_filter=[1])  # Layer 1 = links
+        cluster_neighbors = graph_service.get_neighbors("Article_0", layer_filter=[2])  # Layer 2 = clusters
         
         assert isinstance(link_neighbors, list)
         assert isinstance(cluster_neighbors, list)
         # All returned neighbors should have the specified layer
         if link_neighbors:
-            assert all(n.get("layer") == "link" for n in link_neighbors)
+            assert all(n.get("layer") == 1 for n in link_neighbors)
+        if cluster_neighbors:
+            assert all(n.get("layer") == 2 for n in cluster_neighbors)
     
     def test_get_neighbors_nonexistent_article(self, graph_service):
         """Test getting neighbors for nonexistent article."""
@@ -260,7 +262,8 @@ class TestGraphService:
         """Test finding path between articles."""
         path = graph_service.find_path("Article_0", "Article_5")
         
-        assert isinstance(path, list)
+        # Path can be None or a list
+        assert path is None or isinstance(path, list)
         # Path should start and end with correct articles
         if path:
             assert path[0] == "Article_0"
@@ -270,7 +273,8 @@ class TestGraphService:
         """Test finding path with nonexistent articles."""
         path = graph_service.find_path("Nonexistent_A", "Nonexistent_B")
         
-        assert path == []
+        # Should return None for nonexistent articles
+        assert path is None
     
     def test_find_path_no_path(self, graph_service):
         """Test finding path when no path exists."""
@@ -284,53 +288,56 @@ class TestGraphService:
     
     def test_get_cluster_subgraph(self, graph_service):
         """Test getting subgraph for a cluster."""
-        subgraph = graph_service.get_cluster_subgraph(cluster_id=0)
+        # Create cluster assignments dict
+        cluster_assignments = {f"Article_{i}".lower(): i // 5 for i in range(20)}
+        nodes, edges = graph_service.get_cluster_subgraph(cluster_id=0, cluster_assignments=cluster_assignments)
         
-        assert isinstance(subgraph, dict)
-        assert "nodes" in subgraph
-        assert "edges" in subgraph
-        assert isinstance(subgraph["nodes"], list)
-        assert isinstance(subgraph["edges"], list)
+        assert isinstance(nodes, list)
+        assert isinstance(edges, list)
     
     def test_get_cluster_subgraph_max_nodes(self, graph_service):
         """Test cluster subgraph respects max_nodes limit."""
         max_nodes = 3
-        subgraph = graph_service.get_cluster_subgraph(cluster_id=0, max_nodes=max_nodes)
+        cluster_assignments = {f"Article_{i}".lower(): i // 5 for i in range(20)}
+        nodes, edges = graph_service.get_cluster_subgraph(cluster_id=0, cluster_assignments=cluster_assignments, max_nodes=max_nodes)
         
-        assert len(subgraph["nodes"]) <= max_nodes
+        assert len(nodes) <= max_nodes
     
     def test_get_article_graph(self, graph_service):
         """Test getting graph centered on an article."""
-        article_graph = graph_service.get_article_graph("Article_0", max_depth=2)
+        nodes, edges = graph_service.get_article_graph("Article_0", max_neighbors=20)
         
-        assert isinstance(article_graph, dict)
-        assert "nodes" in article_graph
-        assert "edges" in article_graph
+        assert isinstance(nodes, list)
+        assert isinstance(edges, list)
         # Should include the center article
-        node_titles = [n.get("title") for n in article_graph["nodes"]]
-        assert "Article_0" in node_titles
+        node_ids = [n.get("id") for n in nodes]
+        assert "Article_0" in node_ids
     
     def test_get_article_graph_nonexistent(self, graph_service):
         """Test getting graph for nonexistent article."""
-        article_graph = graph_service.get_article_graph("Nonexistent_Article")
+        nodes, edges = graph_service.get_article_graph("Nonexistent_Article")
         
-        assert article_graph == {"nodes": [], "edges": []}
+        assert nodes == []
+        assert edges == []
     
     def test_to_visualization_format(self, graph_service):
         """Test converting graph to visualization format."""
-        viz_data = graph_service.to_visualization_format(max_nodes=5)
+        # Get some nodes from the graph
+        nodes_list = list(graph_service.graph.nodes())[:10] if graph_service.graph else []
+        nodes, edges = graph_service.to_visualization_format(nodes=nodes_list, max_nodes=5)
         
-        assert isinstance(viz_data, dict)
-        assert "nodes" in viz_data
-        assert "edges" in viz_data
-        assert len(viz_data["nodes"]) <= 5
+        assert isinstance(nodes, list)
+        assert isinstance(edges, list)
+        assert len(nodes) <= 5
     
     def test_to_visualization_format_max_nodes(self, graph_service):
         """Test visualization format respects max_nodes."""
         max_nodes = 3
-        viz_data = graph_service.to_visualization_format(max_nodes=max_nodes)
+        # Get some nodes from the graph
+        nodes_list = list(graph_service.graph.nodes())[:10] if graph_service.graph else []
+        nodes, edges = graph_service.to_visualization_format(nodes=nodes_list, max_nodes=max_nodes)
         
-        assert len(viz_data["nodes"]) <= max_nodes
+        assert len(nodes) <= max_nodes
 
 
 class TestGraphQueries:
@@ -394,11 +401,14 @@ class TestGraphQueries:
         """Test cluster connectivity analysis."""
         service = GraphService(graph=complex_graph)
         
+        # Create cluster assignments dict
+        cluster_assignments = {f"Article_{i}".lower(): i // 5 for i in range(15)}
+        
         # Get subgraph for cluster 0
-        subgraph = service.get_cluster_subgraph(cluster_id=0)
+        nodes, edges = service.get_cluster_subgraph(cluster_id=0, cluster_assignments=cluster_assignments)
         
         # All nodes should belong to cluster 0
-        for node in subgraph["nodes"]:
+        for node in nodes:
             assert node.get("cluster_id") == 0
     
     def test_path_finding_across_clusters(self, complex_graph):

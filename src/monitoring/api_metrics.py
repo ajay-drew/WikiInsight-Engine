@@ -158,7 +158,12 @@ def log_metrics_to_mlflow(
     summary: Dict[str, any],
     config_path: str = "config.yaml",
 ) -> None:
-    """Log API metrics to MLflow."""
+    """
+    Log API metrics to MLflow.
+    
+    This function is completely non-blocking and will never raise exceptions.
+    All errors are caught and logged as debug messages.
+    """
     from src.common.mlflow_utils import log_metrics_safely, start_mlflow_run
     
     try:
@@ -178,7 +183,7 @@ def log_metrics_to_mlflow(
                     f"{endpoint_safe}_error_rate": stats.get("error_rate", 0.0),
                 }, prefix="api")
             
-            logger.info("Logged API metrics to MLflow")
+            logger.debug("Logged API metrics to MLflow")
     except Exception as exc:
-        logger.warning("Failed to log API metrics to MLflow: %s", exc)
+        logger.debug("Failed to log API metrics to MLflow (non-critical): %s", exc)
 

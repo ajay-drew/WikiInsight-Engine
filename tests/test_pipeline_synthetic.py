@@ -31,7 +31,7 @@ def test_synthetic_pipeline_end_to_end():
     )
 
     cfg = {"method": "kmeans", "n_clusters": 2, "random_state": 0}
-    model, labels = make_clusterer(embeddings, cfg)
+    model, labels, _ = make_clusterer(embeddings, cfg)
 
     texts = [f"sample text for {t}" for t in titles]
     centers = model.cluster_centers_

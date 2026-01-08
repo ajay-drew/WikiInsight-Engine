@@ -81,7 +81,7 @@ class TestGPUClustering:
         }
         
         with patch("src.modeling.cluster_topics.get_clustering_backend", return_value="sklearn"):
-            model, labels = make_clusterer(sample_embeddings, cfg, use_gpu=False)
+            model, labels, _ = make_clusterer(sample_embeddings, cfg, use_gpu=False)
             
             assert model is not None
             assert labels is not None
@@ -98,7 +98,7 @@ class TestGPUClustering:
         
         # Even with GPU available, small datasets should use CPU
         with patch("src.modeling.cluster_topics.get_clustering_backend", return_value="pytorch"):
-            model, labels = make_clusterer(small_embeddings, cfg, use_gpu=True)
+            model, labels, _ = make_clusterer(small_embeddings, cfg, use_gpu=True)
             
             assert model is not None
             assert labels is not None
@@ -114,7 +114,7 @@ class TestGPUClustering:
         
         # This test verifies the function works with GPU requested
         # It will use GPU if available, otherwise fall back to CPU
-        model, labels = make_clusterer(sample_embeddings, cfg, use_gpu=True)
+        model, labels, _ = make_clusterer(sample_embeddings, cfg, use_gpu=True)
         
         assert model is not None
         assert labels is not None
@@ -127,9 +127,10 @@ class TestGPUClustering:
             "method": "kmeans",
             "n_clusters": 10,
             "random_state": 42,
+            "adaptive": False,  # Disable adaptive mode for this test
         }
         
-        model, labels = make_clusterer(sample_embeddings, cfg, use_gpu=False)
+        model, labels, _ = make_clusterer(sample_embeddings, cfg, use_gpu=False)
         
         assert model is not None
         assert labels is not None
@@ -144,9 +145,10 @@ class TestGPUClustering:
             "method": "agglomerative",
             "n_clusters": 10,
             "random_state": 42,
+            "adaptive": False,  # Disable adaptive mode for this test
         }
         
-        model, labels = make_clusterer(sample_embeddings, cfg, use_gpu=False)
+        model, labels, _ = make_clusterer(sample_embeddings, cfg, use_gpu=False)
         
         assert model is not None
         assert labels is not None
@@ -162,7 +164,7 @@ class TestGPUClustering:
             "random_state": 42,
         }
         
-        model, labels = make_clusterer(sample_embeddings, cfg, use_gpu=False)
+        model, labels, _ = make_clusterer(sample_embeddings, cfg, use_gpu=False)
         
         assert model is not None
         assert labels is not None
@@ -260,10 +262,11 @@ class TestGPUIntegration:
             "method": "kmeans",
             "n_clusters": 20,
             "random_state": 42,
+            "adaptive": False,  # Disable adaptive mode for this test
         }
         
         # Test with GPU disabled (should always work)
-        model, labels = make_clusterer(embeddings, cfg, use_gpu=False)
+        model, labels, _ = make_clusterer(embeddings, cfg, use_gpu=False)
         
         assert model is not None
         assert labels is not None

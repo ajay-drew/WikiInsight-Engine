@@ -213,7 +213,7 @@ class TestConfigUpdates:
         assert "device" in config["preprocessing"]["embeddings"]
     
     def test_clustering_method_is_kmeans(self):
-        """Test that clustering method is set to kmeans."""
+        """Test that clustering method is set to auto or kmeans."""
         import yaml
         import os
         
@@ -226,7 +226,8 @@ class TestConfigUpdates:
         
         assert "models" in config
         assert "clustering" in config["models"]
-        assert config["models"]["clustering"]["method"] == "kmeans"
+        # Method can be "auto" (adaptive) or "kmeans" (traditional)
+        assert config["models"]["clustering"]["method"] in ["auto", "kmeans"]
 
 
 class TestKnowledgeGraphOptimization:

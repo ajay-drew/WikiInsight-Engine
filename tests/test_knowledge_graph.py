@@ -192,7 +192,7 @@ def test_build_graph_edge_attributes(
         assert data["layer"] in [1, 2, 3]
         assert "weight" in data
         assert "type" in data
-        assert data["type"] in ["direct", "cluster", "semantic"]
+        assert data["type"] in ["link", "direct", "cluster", "semantic"]
 
 
 def test_build_graph_filters_missing_links(

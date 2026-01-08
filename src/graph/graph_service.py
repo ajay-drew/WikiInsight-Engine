@@ -212,6 +212,14 @@ class GraphService:
                     edge_data = self.graph[source][target]
                     layer = edge_data.get("layer", 0)
                     
+                    # Handle case where layer might be a string (legacy data)
+                    if isinstance(layer, str):
+                        # Map string layer names to integers
+                        layer_map = {"link": 1, "cluster": 2, "semantic": 3}
+                        layer = layer_map.get(layer.lower(), 0)
+                    else:
+                        layer = int(layer)
+                    
                     # Include all edges where source is in cluster
                     # This ensures Layer 3 edges are included
                     if source in cluster_articles_set:
@@ -219,7 +227,7 @@ class GraphService:
                             {
                                 "source": source,
                                 "target": target,
-                                "layer": int(layer),  # Ensure layer is an integer
+                                "layer": layer,  # Already converted to int
                                 "weight": float(edge_data.get("weight", 1.0)),
                                 "type": str(edge_data.get("type", "unknown")),
                             }
@@ -230,7 +238,7 @@ class GraphService:
                             {
                                 "source": source,
                                 "target": target,
-                                "layer": int(layer),
+                                "layer": layer,
                                 "weight": float(edge_data.get("weight", 1.0)),
                                 "type": str(edge_data.get("type", "unknown")),
                             }

@@ -164,7 +164,7 @@ async def test_full_pipeline_integration(temp_pipeline_dir, mock_wikipedia_artic
             
             # Run ingestion
             await ingestion_main_async(
-                max_articles=15,
+                max_articles=50,
                 per_query_limit=5,
                 batch_size=10,
                 max_workers=2,
