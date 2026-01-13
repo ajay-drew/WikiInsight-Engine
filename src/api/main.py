@@ -725,6 +725,55 @@ async def api_clusters_overview(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/clusters/embedding-map")
+@limiter.limit("60/minute")
+async def get_embedding_map(request: Request):
+    """
+    Get 2D UMAP projection of article embeddings for visualization.
+    
+    Returns a list of points with title, cluster_id, x, y coordinates,
+    and optional keywords for each article.
+    """
+    import os
+    import pandas as pd
+    
+    EMBEDDING_MAP_PATH = os.path.join("models", "clustering", "embedding_map_2d.parquet")
+    
+    if not os.path.exists(EMBEDDING_MAP_PATH):
+        raise HTTPException(
+            status_code=503,
+            detail="2D embedding map not available. Run clustering pipeline to generate it.",
+        )
+    
+    try:
+        # Load 2D embedding map
+        df = pd.read_parquet(EMBEDDING_MAP_PATH)
+        
+        # Convert to list of dicts
+        points = []
+        for _, row in df.iterrows():
+            point = {
+                "title": str(row["title"]),
+                "cluster_id": int(row["cluster_id"]),
+                "x": float(row["x"]),
+                "y": float(row["y"]),
+            }
+            
+            # Add keywords if available
+            if "keywords" in df.columns and row["keywords"]:
+                keywords = row["keywords"]
+                if isinstance(keywords, (list, tuple)):
+                    point["keywords"] = [str(k) for k in keywords]
+            
+            points.append(point)
+        
+        return {"points": points}
+        
+    except Exception:  # noqa: BLE001
+        logger.exception("Error loading 2D embedding map")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/clusters/{cluster_id}", response_model=ClusterSummary)
 @limiter.limit("100/minute")
 async def api_cluster_detail(request: Request, cluster_id: int):
@@ -836,7 +885,6 @@ async def get_graph_visualization(request: Request, cluster_id: int):
     except Exception:  # noqa: BLE001
         logger.exception("Error getting graph visualization for cluster %d", cluster_id)
         raise HTTPException(status_code=500, detail="Internal server error")
-
 
 @app.get("/api/graph/article/{article_title}")
 @limiter.limit("100/minute")

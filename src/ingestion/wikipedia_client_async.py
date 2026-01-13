@@ -18,8 +18,22 @@ import mwclient
 logger = logging.getLogger(__name__)
 
 
-async def _async_sleep_with_backoff(attempt: int, base_delay: float = 0.5, max_delay: float = 8.0) -> None:
-    """Async sleep helper for exponential backoff with jitter."""
+async def _async_sleep_with_backoff(attempt: int, base_delay: float = 0.5, max_delay: float = 8.0, is_rate_limit: bool = False) -> None:
+    """
+    Async sleep helper for exponential backoff with jitter.
+    
+    Args:
+        attempt: Current retry attempt (0-indexed)
+        base_delay: Base delay in seconds
+        max_delay: Maximum delay in seconds
+        is_rate_limit: If True, use longer delays for rate limit errors (429)
+    """
+    if is_rate_limit:
+        # For rate limit errors, use much longer delays
+        # Start with 5 seconds, up to 60 seconds
+        base_delay = 5.0
+        max_delay = 60.0
+    
     delay = min(max_delay, base_delay * (2**attempt))
     delay *= 1 + random.uniform(-0.2, 0.2)
     if delay > 0:
@@ -82,7 +96,7 @@ class AsyncWikipediaClient:
         max_workers: int = 10,
         *,
         max_retries: int = 3,
-        rate_limit: float = 200.0,
+        rate_limit: float = 50.0,
     ):
         """
         Initialize async Wikipedia client.
@@ -91,12 +105,15 @@ class AsyncWikipediaClient:
             site: Wikipedia site (default: en.wikipedia.org)
             max_workers: Maximum number of concurrent workers for fetching articles
             max_retries: Maximum number of retries for transient failures.
-            rate_limit: Maximum requests per second (default: 200.0)
+            rate_limit: Maximum requests per second (default: 50.0, conservative for unregistered bots)
         """
         self.site = mwclient.Site(site)
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.max_retries = max(1, int(max_retries))
-        self.rate_limiter = AsyncRateLimiter(rate=rate_limit, burst=int(rate_limit))
+        # Use a more conservative rate limit - Wikipedia's actual limit for unregistered bots is lower
+        # Each article fetch makes multiple API calls (info, text, revisions, links, categories)
+        # So we need to be more conservative
+        self.rate_limiter = AsyncRateLimiter(rate=rate_limit, burst=int(rate_limit * 0.5))
         self.semaphore = asyncio.Semaphore(max_workers)
         logger.info(
             "Initialized async Wikipedia client for %s (max_workers=%d, max_retries=%d, rate_limit=%.1f req/sec)",
@@ -126,12 +143,13 @@ class AsyncWikipediaClient:
         """
         # Acquire semaphore to limit concurrent requests
         async with self.semaphore:
-            # Acquire rate limiter token (each API call counts as 1 request)
-            await self.rate_limiter.acquire(1)
-            
             loop = asyncio.get_event_loop()
             for attempt in range(self.max_retries):
                 try:
+                    # Acquire rate limiter token before each API call
+                    # Each article fetch makes multiple API calls, so we need to rate limit each one
+                    await self.rate_limiter.acquire(1)
+                    
                     # Run blocking mwclient calls in thread pool
                     page = await loop.run_in_executor(self.executor, lambda: self.site.pages[title])
 
@@ -139,7 +157,8 @@ class AsyncWikipediaClient:
                         logger.debug("Article '%s' does not exist", title)
                         return None
 
-                    # Fetch text first (most important)
+                    # Fetch text first (most important) - this is another API call
+                    await self.rate_limiter.acquire(1)
                     text = await loop.run_in_executor(self.executor, lambda: page.text())
 
                     # Fetch other data conditionally (these can be slow)
@@ -149,6 +168,7 @@ class AsyncWikipediaClient:
 
                     if fetch_categories:
                         try:
+                            await self.rate_limiter.acquire(1)
                             categories = await loop.run_in_executor(
                                 self.executor,
                                 lambda: list(page.categories()),
@@ -159,6 +179,7 @@ class AsyncWikipediaClient:
                     if fetch_links:
                         try:
                             # Limit links to avoid fetching thousands
+                            await self.rate_limiter.acquire(1)
                             all_links = await loop.run_in_executor(
                                 self.executor,
                                 lambda: list(page.links()),
@@ -168,6 +189,7 @@ class AsyncWikipediaClient:
                             logger.debug("Could not fetch links for '%s'", title)
 
                     try:
+                        await self.rate_limiter.acquire(1)
                         revisions = await loop.run_in_executor(
                             self.executor,
                             lambda: list(page.revisions(max_items=1)),
@@ -183,6 +205,21 @@ class AsyncWikipediaClient:
                         "links": links,
                     }
                 except Exception as exc:  # noqa: BLE001
+                    # Check if this is a rate limit error (429)
+                    is_rate_limit = False
+                    error_str = str(exc)
+                    if "429" in error_str or "too many requests" in error_str.lower() or "rate limit" in error_str.lower():
+                        is_rate_limit = True
+                        # For rate limit errors, wait longer before retrying
+                        logger.warning(
+                            "Rate limit error (429) fetching article '%s' (attempt %d/%d); waiting longer before retry...",
+                            title,
+                            attempt + 1,
+                            self.max_retries,
+                        )
+                        # Wait extra time for rate limit errors
+                        await asyncio.sleep(10.0)  # Wait 10 seconds for rate limit to reset
+                    
                     if attempt + 1 >= self.max_retries:
                         logger.error(
                             "Error fetching article '%s' after %d attempts: %s",
@@ -192,14 +229,16 @@ class AsyncWikipediaClient:
                         )
                         return None
 
-                    logger.warning(
-                        "Transient error fetching article '%s' (attempt %d/%d): %s; retrying...",
-                        title,
-                        attempt + 1,
-                        self.max_retries,
-                        exc,
-                    )
-                await _async_sleep_with_backoff(attempt)
+                    if not is_rate_limit:
+                        logger.warning(
+                            "Transient error fetching article '%s' (attempt %d/%d): %s; retrying...",
+                            title,
+                            attempt + 1,
+                            self.max_retries,
+                            exc,
+                        )
+                    
+                    await _async_sleep_with_backoff(attempt, is_rate_limit=is_rate_limit)
 
     async def search_articles(self, query: str, limit: int = 10) -> List[Dict]:
         """
@@ -214,13 +253,14 @@ class AsyncWikipediaClient:
         """
         # Acquire semaphore and rate limiter token
         async with self.semaphore:
-            await self.rate_limiter.acquire(1)
-            
             loop = asyncio.get_event_loop()
 
             async def _search_with_retries() -> List[Dict]:
                 for attempt in range(self.max_retries):
                     try:
+                        # Acquire rate limiter token before search
+                        await self.rate_limiter.acquire(1)
+                        
                         def _search() -> List[Dict]:
                             search_results: List[Dict] = []
                             for page in self.site.search(query, max_items=limit):
@@ -234,6 +274,20 @@ class AsyncWikipediaClient:
 
                         return await loop.run_in_executor(self.executor, _search)
                     except Exception as exc:  # noqa: BLE001
+                        # Check if this is a rate limit error (429)
+                        is_rate_limit = False
+                        error_str = str(exc)
+                        if "429" in error_str or "too many requests" in error_str.lower() or "rate limit" in error_str.lower():
+                            is_rate_limit = True
+                            logger.warning(
+                                "Rate limit error (429) searching for query '%s' (attempt %d/%d); waiting longer before retry...",
+                                query,
+                                attempt + 1,
+                                self.max_retries,
+                            )
+                            # Wait extra time for rate limit errors
+                            await asyncio.sleep(10.0)  # Wait 10 seconds for rate limit to reset
+                        
                         if attempt + 1 >= self.max_retries:
                             logger.error(
                                 "Error searching articles for query '%s' after %d attempts: %s",
@@ -243,14 +297,15 @@ class AsyncWikipediaClient:
                             )
                             return []
 
-                        logger.warning(
-                            "Transient error during search for query '%s' (attempt %d/%d): %s; retrying...",
-                            query,
-                            attempt + 1,
-                            self.max_retries,
-                            exc,
-                        )
-                        await _async_sleep_with_backoff(attempt)
+                        if not is_rate_limit:
+                            logger.warning(
+                                "Transient error during search for query '%s' (attempt %d/%d): %s; retrying...",
+                                query,
+                                attempt + 1,
+                                self.max_retries,
+                                exc,
+                            )
+                        await _async_sleep_with_backoff(attempt, is_rate_limit=is_rate_limit)
 
                 return []
 

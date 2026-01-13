@@ -152,7 +152,7 @@ async def fetch_corpus_async(
     existing_articles: Optional[List[Dict]] = None,
     checkpoint_path: Optional[str] = None,
     checkpoint_interval: int = 1000,
-    rate_limit: float = 200.0,
+    rate_limit: float = 50.0,
 ) -> List[Dict]:
     """
     Fetch a corpus of Wikipedia articles concurrently with rate limiting.
@@ -163,7 +163,7 @@ async def fetch_corpus_async(
         batch_size: Number of articles to fetch concurrently in each batch.
         max_workers: Maximum number of concurrent workers.
         seed_queries: List of seed queries to search (3-6 queries). If None, loads from config.
-        rate_limit: Maximum requests per second (default: 200.0).
+        rate_limit: Maximum requests per second (default: 50.0, conservative for unregistered bots).
 
     Returns:
         List of normalized article dictionaries.
@@ -176,10 +176,11 @@ async def fetch_corpus_async(
     validate_ingestion_config(seed_queries, per_query_limit, max_articles)
     # Optimize batch size and workers based on rate limit
     # We want to maximize throughput while staying under the limit
-    # With 200 req/sec, we can process ~200 articles per second
-    # Optimal batch size should allow us to utilize the full rate limit
-    optimal_batch_size = min(batch_size, int(rate_limit * 0.5))  # Process batches at ~50% of rate limit for safety
-    optimal_workers = min(max_workers, int(rate_limit * 0.8))  # Use up to 80% of rate limit for concurrency
+    # Each article fetch makes multiple API calls (info, text, revisions, links, categories)
+    # So we need to be more conservative with concurrency
+    # Use ~30% of rate limit for batch size and ~40% for workers to account for multiple API calls per article
+    optimal_batch_size = min(batch_size, max(1, int(rate_limit * 0.3)))  # Process batches at ~30% of rate limit for safety
+    optimal_workers = min(max_workers, max(1, int(rate_limit * 0.4)))  # Use up to 40% of rate limit for concurrency
     
     logger.info(
         "Initializing async corpus fetch (max_articles=%d, per_query_limit=%d, batch_size=%d->%d, max_workers=%d->%d, rate_limit=%.1f req/sec)",
@@ -383,7 +384,7 @@ async def main_async(
     # Load rate limit, seed queries, max_articles, per_query_limit, and performance settings from config
     import yaml
     config_path = "config.yaml"
-    rate_limit = 200.0  # Default
+    rate_limit = 50.0  # Default - conservative for unregistered bots
     seed_queries = None
     config_max_workers = max_workers  # Use CLI arg as default
     config_max_articles = max_articles  # Use CLI arg as default
@@ -393,7 +394,7 @@ async def main_async(
         try:
             with open(config_path, "r") as f:
                 config = yaml.safe_load(f) or {}
-            rate_limit = float(config.get("data", {}).get("wikipedia", {}).get("api_rate_limit", 200.0))
+            rate_limit = float(config.get("data", {}).get("wikipedia", {}).get("api_rate_limit", 50.0))
             logger.info("Loaded rate limit from config: %.1f req/sec", rate_limit)
             
             # Load seed queries

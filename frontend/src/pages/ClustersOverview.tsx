@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useMemo } from "react";
-import { ClusterSummary, fetchClustersOverview, fetchClusterSummary, fetchGraphVisualization, GraphNode, GraphEdge } from "../lib/api";
+import { ClusterSummary, fetchClustersOverview, fetchClusterSummary, fetchGraphVisualization, GraphNode, GraphEdge, fetchEmbeddingMap, EmbeddingPoint } from "../lib/api";
 import { KnowledgeGraph } from "../components/KnowledgeGraph";
 import { GraphControls } from "../components/GraphControls";
 import { ClusterCardSkeleton } from "../components/ClusterCardSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { Tooltip } from "../components/Tooltip";
+import { EmbeddingMap } from "../components/EmbeddingMap";
 import { FaSort, FaSortUp, FaSortDown, FaDownload } from "react-icons/fa";
 import { usePersistentState } from "../hooks/usePersistentState";
 import { useToast } from "../hooks/useToast";
@@ -15,7 +16,7 @@ export function ClustersOverviewPage() {
   const [selectedCluster, setSelectedCluster] = useState<ClusterSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [persistentUI, setPersistentUI] = usePersistentState<{
-    activeTab: "table" | "graph";
+    activeTab: "table" | "graph" | "embedding-map";
     selectedClusterId: number | null;
     searchQuery: string;
     showLayers: { link: boolean; cluster: boolean; semantic: boolean };
@@ -32,6 +33,8 @@ export function ClustersOverviewPage() {
   const { activeTab, selectedClusterId, searchQuery, showLayers, sortColumn, sortDirection } = persistentUI;
   const [graphData, setGraphData] = useState<{ nodes: GraphNode[]; edges: GraphEdge[] } | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  const [embeddingMapPoints, setEmbeddingMapPoints] = useState<EmbeddingPoint[]>([]);
+  const [embeddingMapLoading, setEmbeddingMapLoading] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -84,9 +87,25 @@ export function ClustersOverviewPage() {
     }
   }
 
+  async function loadEmbeddingMap() {
+    setEmbeddingMapLoading(true);
+    try {
+      const data = await fetchEmbeddingMap();
+      setEmbeddingMapPoints(data.points);
+    } catch (err: any) {
+      toast.showError(err.message || "Failed to load embedding map.");
+      setEmbeddingMapPoints([]);
+    } finally {
+      setEmbeddingMapLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (activeTab === "graph" && selectedCluster) {
       void loadGraphData(selectedCluster.cluster_id);
+    }
+    if (activeTab === "embedding-map" && embeddingMapPoints.length === 0) {
+      void loadEmbeddingMap();
     }
   }, [activeTab, selectedCluster]);
 
@@ -319,6 +338,26 @@ export function ClustersOverviewPage() {
             }}
           >
             Graph View
+          </button>
+          <button
+            onClick={() => setPersistentUI((prev) => ({ ...prev, activeTab: "embedding-map" }))}
+            className="px-4 py-2 text-sm font-medium transition-colors"
+            style={{
+              color: activeTab === "embedding-map" ? 'var(--accent)' : 'var(--text-tertiary)',
+              borderBottom: activeTab === "embedding-map" ? '2px solid var(--accent)' : 'none',
+            }}
+            onMouseEnter={(e) => {
+              if (activeTab !== "embedding-map") {
+                e.currentTarget.style.color = 'var(--text-secondary)';
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (activeTab !== "embedding-map") {
+                e.currentTarget.style.color = 'var(--text-tertiary)';
+              }
+            }}
+          >
+            Embedding Map
           </button>
         </div>
 
@@ -591,6 +630,46 @@ export function ClustersOverviewPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === "embedding-map" && (
+          <div className="space-y-4">
+            {embeddingMapLoading ? (
+              <div className="flex items-center justify-center h-96" style={{ backgroundColor: 'var(--bg-secondary)' }}>
+                <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--text-tertiary)' }}>
+                  <div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: 'var(--accent)' }}></div>
+                  <span>Loading embedding map...</span>
+                </div>
+              </div>
+            ) : embeddingMapPoints.length > 0 ? (
+              <EmbeddingMap
+                points={embeddingMapPoints}
+                selectedClusterId={selectedClusterId}
+                searchQuery={searchQuery}
+                onPointClick={(point) => {
+                  console.log("Clicked point:", point);
+                  // Optionally select the cluster
+                  if (point.cluster_id !== selectedClusterId) {
+                    void handleSelectCluster(point.cluster_id);
+                  }
+                }}
+              />
+            ) : (
+              <div
+                className="flex items-center justify-center h-96 rounded-lg"
+                style={{ backgroundColor: 'var(--bg-secondary)' }}
+              >
+                <div className="text-center">
+                  <div className="text-lg font-medium mb-2" style={{ color: 'var(--text-primary)' }}>
+                    No Embedding Map Available
+                  </div>
+                  <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+                    Run the clustering pipeline to generate the 2D embedding visualization.
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -234,6 +234,28 @@ export async function fetchArticleGraph(articleTitle: string): Promise<GraphVisu
   return (await resp.json()) as GraphVisualization;
 }
 
+// Embedding Map API types and functions
+export type EmbeddingPoint = {
+  title: string;
+  cluster_id: number;
+  x: number;
+  y: number;
+  keywords?: string[];
+};
+
+export type EmbeddingMapResponse = {
+  points: EmbeddingPoint[];
+};
+
+export async function fetchEmbeddingMap(): Promise<EmbeddingMapResponse> {
+  const resp = await fetch(`${API_BASE}/clusters/embedding-map`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Failed to load embedding map (${resp.status}): ${text || resp.statusText}`);
+  }
+  return (await resp.json()) as EmbeddingMapResponse;
+}
+
 // Pipeline API types and functions
 export type PipelineConfig = {
   seed_queries: string[];  // 3-6 queries

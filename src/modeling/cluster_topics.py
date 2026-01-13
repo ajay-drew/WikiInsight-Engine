@@ -1477,6 +1477,27 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Error during semantic metrics calculation: %s", exc)
         
+        # Generate 2D embedding map for visualization
+        update_progress("clustering", "running", 90.0, "Generating 2D embedding map...")
+        try:
+            from src.modeling.embedding_map import generate_embedding_map_2d
+            
+            logger.info("Generating 2D embedding map with UMAP...")
+            embedding_map_result = generate_embedding_map_2d(
+                embeddings_path=EMBEDDINGS_PATH,
+                assignments_path=CLUSTER_ASSIGNMENTS_PATH,
+                summaries_path=CLUSTERS_SUMMARY_PATH,
+            )
+            
+            if embedding_map_result is not None:
+                logger.info("2D embedding map generated successfully")
+            else:
+                logger.warning("Failed to generate 2D embedding map (non-critical, continuing)")
+        except ImportError:
+            logger.warning("UMAP library not available, skipping 2D embedding map generation")
+        except Exception as map_exc:  # noqa: BLE001
+            logger.warning("Error generating 2D embedding map (non-critical): %s", map_exc)
+        
         update_progress("clustering", "running", 95.0, "Finalizing metrics...")
 
         # Calculate cluster size distribution

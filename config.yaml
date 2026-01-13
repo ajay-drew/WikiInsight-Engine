@@ -1,15 +1,15 @@
 data:
   wikipedia:
     site: en.wikipedia.org
-    api_rate_limit: 200
+    api_rate_limit: 50
     cache_ttl: 3600
 ingestion:
   seed_queries:
-  - 'Chicken Recipe '
-  - Artificial intelligence
-  - KFC
-  - Nvidia
-  per_query_limit: 26
+  - Coffee
+  - Marvel Cinematic Universe
+  - K-pop
+  - Fast Fashion
+  per_query_limit: 52
   max_articles: 1000
   max_links_per_article: 50
   stub_min_words: 200
