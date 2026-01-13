@@ -5,10 +5,11 @@ data:
     cache_ttl: 3600
 ingestion:
   seed_queries:
-  - Machine learning
+  - 'Chicken Recipe '
   - Artificial intelligence
-  - Data science
-  per_query_limit: 21
+  - KFC
+  - Nvidia
+  per_query_limit: 26
   max_articles: 1000
   max_links_per_article: 50
   stub_min_words: 200
@@ -24,7 +25,11 @@ models:
     use_gpu: 'true'
     preprocessing:
       normalize_embeddings: true
-      max_optimization_time: 60
+      max_optimization_time: 120
+    metrics:
+      calculate_semantic_metrics: true
+      coherence_method: both
+      diversity_method: both
   neighbors:
     n_neighbors: 10
     algorithm: auto

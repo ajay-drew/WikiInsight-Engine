@@ -1423,8 +1423,61 @@ def main() -> None:
             centers=centers,
         )
         logger.info("Cluster summaries computed successfully")
-        update_progress("clustering", "running", 95.0, "Finalizing metrics...")
+        update_progress("clustering", "running", 85.0, "Calculating semantic metrics...")
         summaries_df.to_parquet(CLUSTERS_SUMMARY_PATH, index=False)
+
+        # Calculate semantic metrics (Topic Coherence, Category Alignment, Cluster Diversity)
+        semantic_metrics = {}
+        try:
+            from src.modeling.clustering_metrics import calculate_all_semantic_metrics
+            from src.preprocessing.embeddings import EmbeddingGenerator
+            
+            # Get metrics configuration
+            metrics_cfg = model_cfg.get("metrics", {})
+            calculate_semantic = metrics_cfg.get("calculate_semantic_metrics", True)
+            
+            if calculate_semantic:
+                logger.info("Calculating semantic metrics...")
+                
+                # Load embedding model for keyword encoding
+                embedding_model_name = config.get("preprocessing", {}).get("embeddings", {}).get("model", "all-MiniLM-L6-v2")
+                embedding_device = config.get("preprocessing", {}).get("embeddings", {}).get("device", "auto")
+                
+                try:
+                    embedding_generator = EmbeddingGenerator(
+                        model_name=embedding_model_name,
+                        device=embedding_device
+                    )
+                    embedding_model = embedding_generator.model
+                    
+                    # Calculate semantic metrics
+                    semantic_metrics = calculate_all_semantic_metrics(
+                        summaries_df=summaries_df,
+                        assignments_df=assignments_df,
+                        cleaned_articles_df=cleaned_df,
+                        embeddings=embeddings_used,
+                        centers=centers,
+                        embedding_model=embedding_model,
+                        metrics_config=metrics_cfg,
+                    )
+                    
+                    if semantic_metrics:
+                        logger.info("Calculated semantic metrics: %s", list(semantic_metrics.keys()))
+                    else:
+                        logger.warning("No semantic metrics calculated (may be due to missing data)")
+                        
+                except Exception as emb_exc:
+                    logger.warning("Failed to load embedding model for semantic metrics: %s", emb_exc)
+                except Exception as sem_exc:
+                    logger.warning("Failed to calculate semantic metrics: %s", sem_exc)
+            else:
+                logger.info("Semantic metrics calculation disabled in config")
+        except ImportError as imp_exc:
+            logger.warning("Failed to import semantic metrics module: %s", imp_exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error during semantic metrics calculation: %s", exc)
+        
+        update_progress("clustering", "running", 95.0, "Finalizing metrics...")
 
         # Calculate cluster size distribution
         cluster_sizes = summaries_df["size"].values if "size" in summaries_df.columns else []
@@ -1495,10 +1548,17 @@ def main() -> None:
             "n_clusters": int(len(summaries_df)),
         }
         metrics.update(cluster_size_metrics)
+        
+        # Baseline metrics (geometric)
         if silhouette_score_val is not None:
-            metrics["silhouette_score"] = silhouette_score_val
+            metrics["baseline_silhouette_score"] = silhouette_score_val
         if davies_bouldin is not None:
-            metrics["davies_bouldin_index"] = davies_bouldin
+            metrics["baseline_davies_bouldin_index"] = davies_bouldin
+        
+        # Semantic metrics (may be empty if calculation failed or disabled)
+        for key, value in semantic_metrics.items():
+            if value is not None:
+                metrics[f"semantic_{key}"] = value
         
         save_json(metrics, METRICS_PATH)
 
@@ -1510,6 +1570,8 @@ def main() -> None:
         )
         
         try:
+            import mlflow
+            
             with start_mlflow_run("cluster_topics"):
                 # Log parameters
                 log_params_safely(model_cfg, prefix="clustering")
@@ -1528,8 +1590,31 @@ def main() -> None:
                         "clustering.n_clusters_actual": actual_n_clusters,
                     })
                 
-                # Log metrics
-                log_metrics_safely(metrics)
+                # Add tags for better organization
+                try:
+                    active_run = mlflow.active_run()
+                    if active_run:
+                        mlflow.set_tag("metrics_version", "2.0")
+                        mlflow.set_tag("clustering_method", model_cfg.get("method", "auto"))
+                        mlflow.set_tag("has_semantic_metrics", str(bool(semantic_metrics)))
+                except Exception:  # noqa: BLE001
+                    pass  # Tags are optional
+                
+                # Log metrics with organized prefixes
+                # Baseline metrics (already have baseline_ prefix)
+                baseline_metrics = {
+                    k: v for k, v in metrics.items() 
+                    if k.startswith("baseline_") or k in ("n_articles", "n_clusters", "cluster_size_min", "cluster_size_max", "cluster_size_mean", "cluster_size_std")
+                }
+                log_metrics_safely(baseline_metrics)
+                
+                # Semantic metrics (already have semantic_ prefix)
+                semantic_metrics_to_log = {
+                    k: v for k, v in metrics.items() 
+                    if k.startswith("semantic_")
+                }
+                if semantic_metrics_to_log:
+                    log_metrics_safely(semantic_metrics_to_log)
                 
                 # Log keyword extraction metrics if available
                 if "keywords" in summaries_df.columns:
@@ -1537,6 +1622,9 @@ def main() -> None:
                     log_metrics_safely({"avg_keywords_per_cluster": float(avg_keywords)})
                 
                 logger.info("Logged clustering metrics to MLflow")
+                if semantic_metrics_to_log:
+                    logger.info("  - Baseline metrics: %d", len(baseline_metrics))
+                    logger.info("  - Semantic metrics: %d", len(semantic_metrics_to_log))
         except Exception as exc:  # noqa: BLE001
             logger.warning("MLflow logging for clustering skipped or failed: %s", exc)
 
